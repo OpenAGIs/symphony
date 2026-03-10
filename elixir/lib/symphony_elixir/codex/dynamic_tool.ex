@@ -467,8 +467,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     Regex.match?(~r/\bissueUpdate\b/u, sanitize_graphql_document(query))
   end
 
-  defp issue_update_mutation?(_query), do: false
-
   defp audit_tool_event(nil, audit_metadata, event, payload) do
     log_tool_event(event, Map.merge(audit_metadata, payload))
   end
