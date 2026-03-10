@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.PromptBuilder do
   @moduledoc """
-  Builds agent prompts from Linear issue data.
+  Builds agent prompts from normalized tracker issue data.
   """
 
   alias SymphonyElixir.{Config, Workflow}
@@ -18,6 +18,10 @@ defmodule SymphonyElixir.PromptBuilder do
     |> Solid.render!(
       %{
         "attempt" => Keyword.get(opts, :attempt),
+        "tracker" => %{
+          "kind" => Config.tracker_kind(),
+          "display_name" => Config.tracker_display_name()
+        },
         "issue" => issue |> Map.from_struct() |> to_solid_map()
       },
       @render_opts

@@ -10,7 +10,7 @@ defmodule SymphonyElixir.Config do
   @default_terminal_states ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
   @default_linear_endpoint "https://api.linear.app/graphql"
   @default_prompt_template """
-  You are working on a Linear issue.
+  You are working on a {{ tracker.display_name }} issue.
 
   Identifier: {{ issue.identifier }}
   Title: {{ issue.title }}
@@ -183,6 +183,17 @@ defmodule SymphonyElixir.Config do
     get_in(validated_workflow_options(), [:tracker, :kind])
   end
 
+  @spec tracker_display_name() :: String.t()
+  def tracker_display_name do
+    case tracker_kind() do
+      "github" -> "GitHub"
+      "jira" -> "Jira"
+      "linear" -> "Linear"
+      "memory" -> "memory"
+      _ -> "issue tracker"
+    end
+  end
+
   @spec linear_endpoint() :: String.t()
   def linear_endpoint do
     get_in(validated_workflow_options(), [:tracker, :endpoint])
@@ -217,6 +228,16 @@ defmodule SymphonyElixir.Config do
   @spec linear_terminal_states() :: [String.t()]
   def linear_terminal_states do
     get_in(validated_workflow_options(), [:tracker, :terminal_states])
+  end
+
+  @spec tracker_active_states() :: [String.t()]
+  def tracker_active_states do
+    linear_active_states()
+  end
+
+  @spec tracker_terminal_states() :: [String.t()]
+  def tracker_terminal_states do
+    linear_terminal_states()
   end
 
   @spec poll_interval_ms() :: pos_integer()
@@ -323,10 +344,14 @@ defmodule SymphonyElixir.Config do
   def workflow_prompt do
     case current_workflow() do
       {:ok, %{prompt_template: prompt}} ->
-        if String.trim(prompt) == "", do: @default_prompt_template, else: prompt
+        if String.trim(prompt) == "" do
+          default_prompt_template()
+        else
+          prompt
+        end
 
       _ ->
-        @default_prompt_template
+        default_prompt_template()
     end
   end
 
@@ -388,6 +413,8 @@ defmodule SymphonyElixir.Config do
 
   defp require_tracker_kind do
     case tracker_kind() do
+      "github" -> :ok
+      "jira" -> :ok
       "linear" -> :ok
       "memory" -> :ok
       nil -> {:error, :missing_tracker_kind}
@@ -791,6 +818,10 @@ defmodule SymphonyElixir.Config do
   end
 
   defp normalize_tracker_kind(_kind), do: nil
+
+  defp default_prompt_template do
+    String.replace(@default_prompt_template, "{{ tracker.display_name }}", tracker_display_name())
+  end
 
   defp workflow_config do
     case current_workflow() do

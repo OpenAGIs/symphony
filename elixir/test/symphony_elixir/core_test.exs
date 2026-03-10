@@ -69,6 +69,12 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: 123)
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "jira")
+    assert :ok = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "github")
+    assert :ok = Config.validate!()
   end
 
   test "current WORKFLOW.md file is valid and complete" do
@@ -695,6 +701,23 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Identifier: MT-778"
     assert prompt =~ "Title: Handle empty body"
     assert prompt =~ "No description provided."
+  end
+
+  test "prompt builder default template uses tracker display names" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "jira", prompt: "")
+
+    issue = %Issue{
+      identifier: "MT-779",
+      title: "Handle non-linear tracker prompts",
+      description: "Use tracker context in default prompts.",
+      state: "Todo",
+      url: "https://example.org/issues/MT-779",
+      labels: []
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert prompt =~ "You are working on a Jira issue."
   end
 
   test "prompt builder reports workflow load failures separately from template parse errors" do

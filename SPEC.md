@@ -2,7 +2,7 @@
 
 Status: Draft v1 (language-agnostic)
 
-Purpose: Define a service that orchestrates coding agents to get project work done.
+Purpose: Define a service that orchestrates coding agents to get project work done across supported issue trackers.
 
 ## 1. Problem Statement
 
@@ -127,7 +127,7 @@ Symphony is easiest to port when kept in these layers:
 
 ### 3.3 External Dependencies
 
-- Issue tracker API (Linear for `tracker.kind: linear` in this specification version).
+- Issue tracker API (for example Linear or Jira, depending on `tracker.kind`).
 - Local filesystem for workspaces and logs.
 - Optional workspace population tooling (for example Git CLI, if used).
 - Coding-agent executable that supports JSON-RPC-like app-server mode over stdio.

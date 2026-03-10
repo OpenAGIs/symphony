@@ -36,7 +36,7 @@ codex:
     type: workspaceWrite
 ---
 
-You are working on a Linear ticket `{{ issue.identifier }}`
+You are working on a {{ tracker.display_name }} ticket `{{ issue.identifier }}`
 
 {% if attempt %}
 Continuation context:
