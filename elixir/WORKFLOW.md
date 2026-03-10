@@ -34,6 +34,9 @@ codex:
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite
+  dynamic_tool_timeout_ms: 30000
+  dynamic_tool_max_retries: 2
+  dynamic_tool_allow_mutations: true
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`
@@ -72,6 +75,11 @@ Work only in the provided repository copy. Do not touch any other path.
 ## Prerequisite: Linear MCP or `linear_graphql` tool is available
 
 The agent should be able to talk to Linear, either via a configured Linear MCP server or injected `linear_graphql` tool. If none are present, stop and ask the user to configure Linear.
+
+When Symphony injects Linear tools, `linear_graphql` enforces one GraphQL operation per tool call,
+blocks raw `issueUpdate` mutations, logs tool execution outcomes for auditability, and applies the
+configured timeout/retry/mutation policy. Use `linear_update_issue_state` for workflow state moves
+so the default `Todo -> In Progress -> Human Review -> Merging -> Done` gate stays enforced.
 
 ## Default posture
 

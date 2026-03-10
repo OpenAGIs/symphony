@@ -31,6 +31,9 @@ Check out [elixir/README.md](elixir/README.md) for instructions on how to set up
 and run the Elixir-based Symphony implementation. You can also ask your favorite coding agent to
 help with the setup:
 
+The current Elixir runtime includes an audited client-side `linear_graphql` tool gateway with
+single-operation validation plus configurable timeout, retry, and mutation-permission controls.
+
 > Set up Symphony for my repository based on
 > https://github.com/openai/symphony/blob/main/elixir/README.md
 

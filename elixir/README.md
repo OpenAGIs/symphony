@@ -20,8 +20,11 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 4. Sends a workflow prompt to Codex
 5. Keeps Codex working on the issue until the work is done
 
-During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+During app-server sessions, Symphony also serves client-side Linear tools. `linear_graphql` handles
+raw GraphQL reads and non-`issueUpdate` mutations, while `linear_update_issue_state` enforces the
+default `Todo -> In Progress -> Human Review -> Merging -> Done` approval flow for the current
+issue. The runtime validates each call, emits audit logs, and applies configurable
+timeout/retry/mutation-permission controls before forwarding requests to Linear.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -118,6 +121,15 @@ Notes:
 - Supported `codex.thread_sandbox` values: `read-only`, `workspace-write`, `danger-full-access`.
 - Supported `codex.turn_sandbox_policy.type` values: `dangerFullAccess`, `readOnly`,
   `externalSandbox`, `workspaceWrite`.
+- `codex.dynamic_tool_timeout_ms` sets the per-call timeout for client-side tool execution.
+  Default: `30000`.
+- `codex.dynamic_tool_max_retries` retries transient client-side tool transport failures and
+  timeouts. Default: `2` retries.
+- `codex.dynamic_tool_allow_mutations` allows or blocks `linear_graphql` mutation operations.
+  Default: `true`.
+- `tracker.todo_state`, `tracker.in_progress_state`, `tracker.human_review_state`,
+  `tracker.merging_state`, and `tracker.done_state` define the guarded issue-state approval flow
+  used by `linear_update_issue_state`.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue

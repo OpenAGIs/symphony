@@ -651,6 +651,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       codex_turn_timeout_ms: nil,
       codex_read_timeout_ms: nil,
       codex_stall_timeout_ms: nil,
+      codex_dynamic_tool_timeout_ms: nil,
+      codex_dynamic_tool_max_retries: nil,
+      codex_dynamic_tool_allow_mutations: nil,
+      tracker_todo_state: nil,
+      tracker_in_progress_state: nil,
+      tracker_human_review_state: nil,
+      tracker_merging_state: nil,
+      tracker_done_state: nil,
       tracker_api_token: nil,
       tracker_project_slug: nil
     )
@@ -684,6 +692,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.codex_turn_timeout_ms() == 3_600_000
     assert Config.codex_read_timeout_ms() == 5_000
     assert Config.codex_stall_timeout_ms() == 300_000
+    assert Config.codex_dynamic_tool_timeout_ms() == 30_000
+    assert Config.codex_dynamic_tool_max_retries() == 2
+    assert Config.codex_dynamic_tool_allow_mutations?()
+    assert Config.tracker_todo_state() == "Todo"
+    assert Config.tracker_in_progress_state() == "In Progress"
+    assert Config.tracker_human_review_state() == "Human Review"
+    assert Config.tracker_merging_state() == "Merging"
+    assert Config.tracker_done_state() == "Done"
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server --model gpt-5.3-codex")
     assert Config.codex_command() == "codex app-server --model gpt-5.3-codex"
@@ -716,6 +732,18 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_stall_timeout_ms: "bad")
     assert Config.codex_stall_timeout_ms() == 300_000
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_dynamic_tool_timeout_ms: "bad")
+    assert Config.codex_dynamic_tool_timeout_ms() == 30_000
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_dynamic_tool_max_retries: "bad")
+    assert Config.codex_dynamic_tool_max_retries() == 2
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_dynamic_tool_allow_mutations: "bad")
+    assert Config.codex_dynamic_tool_allow_mutations?()
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_human_review_state: %{bad: true})
+    assert Config.tracker_human_review_state() == "Human Review"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_active_states: %{todo: true},

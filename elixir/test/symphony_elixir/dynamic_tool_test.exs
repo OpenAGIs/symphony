@@ -2,8 +2,29 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.Codex.DynamicTool
+  alias SymphonyElixir.Linear.Issue
 
-  test "tool_specs advertises the linear_graphql input contract" do
+  defmodule FakeTracker do
+    def fetch_issue_states_by_ids([issue_id]) do
+      send(self(), {:fetch_issue_states_by_ids_called, issue_id})
+
+      case Process.get({__MODULE__, :fetch_result}) do
+        nil -> {:ok, [%Issue{id: issue_id, state: "In Progress"}]}
+        result -> result
+      end
+    end
+
+    def update_issue_state(issue_id, state_name) do
+      send(self(), {:update_issue_state_called, issue_id, state_name})
+
+      case Process.get({__MODULE__, :update_result}) do
+        nil -> :ok
+        result -> result
+      end
+    end
+  end
+
+  test "tool_specs advertises the linear GraphQL and guarded transition tools" do
     assert [
              %{
                "description" => description,
@@ -16,10 +37,23 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                  "type" => "object"
                },
                "name" => "linear_graphql"
+             },
+             %{
+               "description" => transition_description,
+               "inputSchema" => %{
+                 "properties" => %{
+                   "issueId" => _,
+                   "state" => _
+                 },
+                 "required" => ["state"],
+                 "type" => "object"
+               },
+               "name" => "linear_update_issue_state"
              }
            ] = DynamicTool.tool_specs()
 
     assert description =~ "Linear"
+    assert transition_description =~ "approval flow"
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do
@@ -37,7 +71,28 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Jason.decode!(text) == %{
              "error" => %{
                "message" => ~s(Unsupported dynamic tool: "not_a_real_tool".),
-               "supportedTools" => ["linear_graphql"]
+               "supportedTools" => ["linear_graphql", "linear_update_issue_state"]
+             }
+           }
+  end
+
+  test "linear_graphql blocks raw issueUpdate mutations" do
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{"query" => "mutation SaveIssue { issueUpdate(id: \"123\", input: {stateId: \"done\"}) { success } }"},
+        linear_client: fn _query, _variables, _opts ->
+          flunk("linear client should not be called for raw issueUpdate mutations")
+        end
+      )
+
+    assert response["success"] == false
+
+    assert [%{"text" => text}] = response["contentItems"]
+
+    assert Jason.decode!(text) == %{
+             "error" => %{
+               "message" => "`linear_graphql` cannot call `issueUpdate`; use `linear_update_issue_state` for guarded workflow transitions."
              }
            }
   end
@@ -106,9 +161,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["success"] == true
   end
 
-  test "linear_graphql passes multi-operation documents through unchanged" do
-    test_pid = self()
-
+  test "linear_graphql rejects multi-operation documents before calling Linear" do
     query = """
     query Viewer { viewer { id } }
     query Teams { teams { nodes { id } } }
@@ -118,15 +171,107 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       DynamicTool.execute(
         "linear_graphql",
         %{"query" => query},
-        linear_client: fn forwarded_query, variables, opts ->
-          send(test_pid, {:linear_client_called, forwarded_query, variables, opts})
-          {:ok, %{"errors" => [%{"message" => "Must provide operation name if query contains multiple operations."}]}}
+        linear_client: fn _forwarded_query, _variables, _opts ->
+          flunk("linear client should not be called for multi-operation documents")
         end
       )
 
-    assert_received {:linear_client_called, forwarded_query, %{}, []}
-    assert forwarded_query == String.trim(query)
     assert response["success"] == false
+
+    assert [
+             %{
+               "text" => text
+             }
+           ] = response["contentItems"]
+
+    assert Jason.decode!(text) == %{
+             "error" => %{
+               "message" => "`linear_graphql` requires exactly one GraphQL operation per tool call."
+             }
+           }
+  end
+
+  test "linear_graphql can deny mutations when runtime policy disables them" do
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{"query" => "mutation SaveIssue { issueUpdate(id: \"123\") { success } }"},
+        allow_mutations?: false,
+        linear_client: fn _query, _variables, _opts ->
+          flunk("linear client should not be called when mutations are disabled")
+        end
+      )
+
+    assert response["success"] == false
+
+    assert [
+             %{
+               "text" => text
+             }
+           ] = response["contentItems"]
+
+    assert Jason.decode!(text) == %{
+             "error" => %{
+               "message" => "`linear_graphql` mutations are disabled by the current runtime policy."
+             }
+           }
+  end
+
+  test "linear_graphql retries transient transport failures and emits audit events" do
+    test_pid = self()
+    counter = :atomics.new(1, [])
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{"query" => "query Viewer { viewer { id } }"},
+        max_retries: 2,
+        audit_metadata: %{session_id: "thread-1-turn-1", issue_id: "issue-1", issue_identifier: "OPE-46"},
+        audit_fun: fn event -> send(test_pid, {:audit_event, event}) end,
+        linear_client: fn _query, _variables, _opts ->
+          case :atomics.add_get(counter, 1, 1) do
+            1 ->
+              {:error, {:linear_api_request, :timeout}}
+
+            _ ->
+              {:ok, %{"data" => %{"viewer" => %{"id" => "usr_retry"}}}}
+          end
+        end
+      )
+
+    assert response["success"] == true
+    assert_received {:audit_event, %{event: :started, attempt: 1, tool: "linear_graphql", session_id: "thread-1-turn-1"}}
+    assert_received {:audit_event, %{event: :retrying, attempt: 1, tool: "linear_graphql", issue_identifier: "OPE-46"}}
+    assert_received {:audit_event, %{event: :started, attempt: 2, tool: "linear_graphql"}}
+    assert_received {:audit_event, %{event: :completed, attempts: 2, success: true, tool: "linear_graphql"}}
+  end
+
+  test "linear_graphql reports timeout failures when the request exceeds the runtime limit" do
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{"query" => "query Viewer { viewer { id } }"},
+        timeout_ms: 10,
+        max_retries: 0,
+        linear_client: fn _query, _variables, _opts ->
+          Process.sleep(50)
+          {:ok, %{"data" => %{"viewer" => %{"id" => "slow"}}}}
+        end
+      )
+
+    assert response["success"] == false
+
+    assert [
+             %{
+               "text" => text
+             }
+           ] = response["contentItems"]
+
+    assert Jason.decode!(text) == %{
+             "error" => %{
+               "message" => "Linear GraphQL tool execution timed out before a response was received."
+             }
+           }
   end
 
   test "linear_graphql rejects blank raw query strings even when using the default client" do
@@ -374,5 +519,76 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                "text" => ":ok"
              }
            ] = response["contentItems"]
+  end
+
+  test "linear_update_issue_state advances the current issue into human review" do
+    current_issue = %Issue{id: "issue-49", state: "In Progress", identifier: "OPE-49"}
+
+    response =
+      DynamicTool.execute(
+        "linear_update_issue_state",
+        %{"state" => "Human Review"},
+        current_issue: current_issue,
+        tracker: FakeTracker
+      )
+
+    assert_received {:fetch_issue_states_by_ids_called, "issue-49"}
+    assert_received {:update_issue_state_called, "issue-49", "Human Review"}
+    assert response["success"] == true
+
+    assert [%{"text" => text}] = response["contentItems"]
+
+    assert Jason.decode!(text) == %{
+             "issueId" => "issue-49",
+             "fromState" => "In Progress",
+             "toState" => "Human Review",
+             "gatedTransition" => true
+           }
+  end
+
+  test "linear_update_issue_state blocks cross-issue transitions" do
+    response =
+      DynamicTool.execute(
+        "linear_update_issue_state",
+        %{"issueId" => "other-issue", "state" => "Human Review"},
+        current_issue: %Issue{id: "issue-49", state: "In Progress"},
+        tracker: FakeTracker
+      )
+
+    assert response["success"] == false
+    refute_received {:update_issue_state_called, _, _}
+
+    assert [%{"text" => text}] = response["contentItems"]
+
+    assert Jason.decode!(text) == %{
+             "error" => %{
+               "message" => "`linear_update_issue_state` can only change the issue active in the current session."
+             }
+           }
+  end
+
+  test "linear_update_issue_state blocks skipping human review and merge approval" do
+    response =
+      DynamicTool.execute(
+        "linear_update_issue_state",
+        %{"state" => "Done"},
+        current_issue: %Issue{id: "issue-49", state: "In Progress"},
+        tracker: FakeTracker
+      )
+
+    assert_received {:fetch_issue_states_by_ids_called, "issue-49"}
+    refute_received {:update_issue_state_called, _, _}
+    assert response["success"] == false
+
+    assert [%{"text" => text}] = response["contentItems"]
+
+    assert Jason.decode!(text) == %{
+             "error" => %{
+               "message" => "Blocked workflow transition that would bypass Symphony's acceptance gate.",
+               "fromState" => "In Progress",
+               "toState" => "Done",
+               "allowedTargets" => ["Human Review"]
+             }
+           }
   end
 end

@@ -8,6 +8,11 @@ defmodule SymphonyElixir.Config do
 
   @default_active_states ["Todo", "In Progress"]
   @default_terminal_states ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+  @default_tracker_todo_state "Todo"
+  @default_tracker_in_progress_state "In Progress"
+  @default_tracker_human_review_state "Human Review"
+  @default_tracker_merging_state "Merging"
+  @default_tracker_done_state "Done"
   @default_linear_endpoint "https://api.linear.app/graphql"
   @default_prompt_template """
   You are working on a Linear issue.
@@ -32,6 +37,9 @@ defmodule SymphonyElixir.Config do
   @default_codex_turn_timeout_ms 3_600_000
   @default_codex_read_timeout_ms 5_000
   @default_codex_stall_timeout_ms 300_000
+  @default_codex_dynamic_tool_timeout_ms 30_000
+  @default_codex_dynamic_tool_max_retries 2
+  @default_codex_dynamic_tool_allow_mutations true
   @default_codex_approval_policy %{
     "reject" => %{
       "sandbox_approval" => true,
@@ -58,6 +66,20 @@ defmodule SymphonyElixir.Config do
                                    type: {:list, :string},
                                    default: @default_active_states
                                  ],
+                                 todo_state: [type: :string, default: @default_tracker_todo_state],
+                                 in_progress_state: [
+                                   type: :string,
+                                   default: @default_tracker_in_progress_state
+                                 ],
+                                 human_review_state: [
+                                   type: :string,
+                                   default: @default_tracker_human_review_state
+                                 ],
+                                 merging_state: [
+                                   type: :string,
+                                   default: @default_tracker_merging_state
+                                 ],
+                                 done_state: [type: :string, default: @default_tracker_done_state],
                                  terminal_states: [
                                    type: {:list, :string},
                                    default: @default_terminal_states
@@ -116,6 +138,18 @@ defmodule SymphonyElixir.Config do
                                  stall_timeout_ms: [
                                    type: :integer,
                                    default: @default_codex_stall_timeout_ms
+                                 ],
+                                 dynamic_tool_timeout_ms: [
+                                   type: :integer,
+                                   default: @default_codex_dynamic_tool_timeout_ms
+                                 ],
+                                 dynamic_tool_max_retries: [
+                                   type: :integer,
+                                   default: @default_codex_dynamic_tool_max_retries
+                                 ],
+                                 dynamic_tool_allow_mutations: [
+                                   type: :boolean,
+                                   default: @default_codex_dynamic_tool_allow_mutations
                                  ]
                                ]
                              ],
@@ -212,6 +246,31 @@ defmodule SymphonyElixir.Config do
   @spec linear_active_states() :: [String.t()]
   def linear_active_states do
     get_in(validated_workflow_options(), [:tracker, :active_states])
+  end
+
+  @spec tracker_todo_state() :: String.t()
+  def tracker_todo_state do
+    get_in(validated_workflow_options(), [:tracker, :todo_state])
+  end
+
+  @spec tracker_in_progress_state() :: String.t()
+  def tracker_in_progress_state do
+    get_in(validated_workflow_options(), [:tracker, :in_progress_state])
+  end
+
+  @spec tracker_human_review_state() :: String.t()
+  def tracker_human_review_state do
+    get_in(validated_workflow_options(), [:tracker, :human_review_state])
+  end
+
+  @spec tracker_merging_state() :: String.t()
+  def tracker_merging_state do
+    get_in(validated_workflow_options(), [:tracker, :merging_state])
+  end
+
+  @spec tracker_done_state() :: String.t()
+  def tracker_done_state do
+    get_in(validated_workflow_options(), [:tracker, :done_state])
   end
 
   @spec linear_terminal_states() :: [String.t()]
@@ -317,6 +376,25 @@ defmodule SymphonyElixir.Config do
     validated_workflow_options()
     |> get_in([:codex, :stall_timeout_ms])
     |> max(0)
+  end
+
+  @spec codex_dynamic_tool_timeout_ms() :: pos_integer()
+  def codex_dynamic_tool_timeout_ms do
+    validated_workflow_options()
+    |> get_in([:codex, :dynamic_tool_timeout_ms])
+    |> max(1)
+  end
+
+  @spec codex_dynamic_tool_max_retries() :: non_neg_integer()
+  def codex_dynamic_tool_max_retries do
+    validated_workflow_options()
+    |> get_in([:codex, :dynamic_tool_max_retries])
+    |> max(0)
+  end
+
+  @spec codex_dynamic_tool_allow_mutations?() :: boolean()
+  def codex_dynamic_tool_allow_mutations? do
+    get_in(validated_workflow_options(), [:codex, :dynamic_tool_allow_mutations])
   end
 
   @spec workflow_prompt() :: String.t()
@@ -464,6 +542,11 @@ defmodule SymphonyElixir.Config do
     |> put_if_present(:api_key, binary_value(Map.get(section, "api_key"), allow_empty: true))
     |> put_if_present(:project_slug, scalar_string_value(Map.get(section, "project_slug")))
     |> put_if_present(:active_states, csv_value(Map.get(section, "active_states")))
+    |> put_if_present(:todo_state, scalar_string_value(Map.get(section, "todo_state")))
+    |> put_if_present(:in_progress_state, scalar_string_value(Map.get(section, "in_progress_state")))
+    |> put_if_present(:human_review_state, scalar_string_value(Map.get(section, "human_review_state")))
+    |> put_if_present(:merging_state, scalar_string_value(Map.get(section, "merging_state")))
+    |> put_if_present(:done_state, scalar_string_value(Map.get(section, "done_state")))
     |> put_if_present(:terminal_states, csv_value(Map.get(section, "terminal_states")))
   end
 
@@ -494,6 +577,9 @@ defmodule SymphonyElixir.Config do
     |> put_if_present(:turn_timeout_ms, integer_value(Map.get(section, "turn_timeout_ms")))
     |> put_if_present(:read_timeout_ms, integer_value(Map.get(section, "read_timeout_ms")))
     |> put_if_present(:stall_timeout_ms, integer_value(Map.get(section, "stall_timeout_ms")))
+    |> put_if_present(:dynamic_tool_timeout_ms, positive_integer_value(Map.get(section, "dynamic_tool_timeout_ms")))
+    |> put_if_present(:dynamic_tool_max_retries, non_negative_integer_value(Map.get(section, "dynamic_tool_max_retries")))
+    |> put_if_present(:dynamic_tool_allow_mutations, boolean_value(Map.get(section, "dynamic_tool_allow_mutations")))
   end
 
   defp extract_hooks_options(section) do
