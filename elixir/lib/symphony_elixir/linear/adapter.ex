@@ -6,10 +6,39 @@ defmodule SymphonyElixir.Linear.Adapter do
   @behaviour SymphonyElixir.Tracker
 
   alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.Workpad
 
   @create_comment_mutation """
   mutation SymphonyCreateComment($issueId: String!, $body: String!) {
     commentCreate(input: {issueId: $issueId, body: $body}) {
+      success
+      comment {
+        id
+        body
+      }
+    }
+  }
+  """
+
+  @workpad_comments_query """
+  query SymphonyFindWorkpadComment($issueId: String!) {
+    issue(id: $issueId) {
+      comments(first: 50) {
+        nodes {
+          id
+          body
+          resolvedAt
+          updatedAt
+          createdAt
+        }
+      }
+    }
+  }
+  """
+
+  @update_comment_mutation """
+  mutation SymphonyUpdateComment($commentId: String!, $body: String!) {
+    commentUpdate(id: $commentId, input: {body: $body}) {
       success
     }
   }
@@ -58,6 +87,36 @@ defmodule SymphonyElixir.Linear.Adapter do
     end
   end
 
+  @spec ensure_workpad_comment(String.t(), String.t()) ::
+          {:ok, %{id: String.t(), body: String.t(), created?: boolean()}} | {:error, term()}
+  def ensure_workpad_comment(issue_id, body) when is_binary(issue_id) and is_binary(body) do
+    with {:ok, response} <- client_module().graphql(@workpad_comments_query, %{issueId: issue_id}) do
+      case active_workpad_comment(response) do
+        {:ok, %{id: id, body: existing_body}} ->
+          {:ok, %{id: id, body: existing_body, created?: false}}
+
+        :not_found ->
+          create_workpad_comment(issue_id, body)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  @spec update_comment(String.t(), String.t()) :: :ok | {:error, term()}
+  def update_comment(comment_id, body) when is_binary(comment_id) and is_binary(body) do
+    with {:ok, response} <-
+           client_module().graphql(@update_comment_mutation, %{commentId: comment_id, body: body}),
+         true <- get_in(response, ["data", "commentUpdate", "success"]) == true do
+      :ok
+    else
+      false -> {:error, :comment_update_failed}
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :comment_update_failed}
+    end
+  end
+
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name)
       when is_binary(issue_id) and is_binary(state_name) do
@@ -76,6 +135,51 @@ defmodule SymphonyElixir.Linear.Adapter do
   defp client_module do
     Application.get_env(:symphony_elixir, :linear_client_module, Client)
   end
+
+  defp create_workpad_comment(issue_id, body) do
+    with {:ok, response} <-
+           client_module().graphql(@create_comment_mutation, %{issueId: issue_id, body: body}),
+         true <- get_in(response, ["data", "commentCreate", "success"]) == true,
+         comment_id when is_binary(comment_id) <- get_in(response, ["data", "commentCreate", "comment", "id"]),
+         comment_body when is_binary(comment_body) <-
+           get_in(response, ["data", "commentCreate", "comment", "body"]) do
+      {:ok, %{id: comment_id, body: comment_body, created?: true}}
+    else
+      false -> {:error, :comment_create_failed}
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :comment_create_failed}
+    end
+  end
+
+  defp active_workpad_comment(response) do
+    case get_in(response, ["data", "issue", "comments", "nodes"]) do
+      comments when is_list(comments) ->
+        comments
+        |> Enum.filter(&active_workpad_comment_node?/1)
+        |> Enum.sort_by(&comment_sort_key/1, :desc)
+        |> List.first()
+        |> normalize_workpad_comment()
+
+      _ ->
+        {:error, :comment_lookup_failed}
+    end
+  end
+
+  defp active_workpad_comment_node?(comment) do
+    is_nil(Map.get(comment, "resolvedAt")) and Workpad.workpad_comment?(Map.get(comment, "body"))
+  end
+
+  defp comment_sort_key(comment) do
+    {Map.get(comment, "updatedAt") || "", Map.get(comment, "createdAt") || ""}
+  end
+
+  defp normalize_workpad_comment(%{"id" => id, "body" => body})
+       when is_binary(id) and is_binary(body) do
+    {:ok, %{id: id, body: body}}
+  end
+
+  defp normalize_workpad_comment(nil), do: :not_found
+  defp normalize_workpad_comment(_comment), do: {:error, :comment_lookup_failed}
 
   defp resolve_state_id(issue_id, state_name) do
     with {:ok, response} <-

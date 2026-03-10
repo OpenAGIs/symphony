@@ -283,19 +283,7 @@ defmodule SymphonyElixir.AppServerTest do
                    |> Jason.decode!()
 
                  payload["id"] == 2 and
-                   case get_in(payload, ["params", "dynamicTools"]) do
-                     [
-                       %{
-                         "description" => description,
-                         "inputSchema" => %{"required" => ["query"]},
-                         "name" => "linear_graphql"
-                       }
-                     ] ->
-                       description =~ "Linear"
-
-                     _ ->
-                       false
-                   end
+                   match_dynamic_tools?(get_in(payload, ["params", "dynamicTools"]))
                else
                  false
                end
@@ -317,6 +305,21 @@ defmodule SymphonyElixir.AppServerTest do
       File.rm_rf(test_root)
     end
   end
+
+  defp match_dynamic_tools?(dynamic_tools) when is_list(dynamic_tools) do
+    Enum.any?(dynamic_tools, fn tool ->
+      tool["name"] == "linear_graphql" and
+        get_in(tool, ["inputSchema", "required"]) == ["query"] and
+        String.contains?(tool["description"] || "", "Linear")
+    end) and
+      Enum.any?(dynamic_tools, fn tool ->
+        tool["name"] == "linear_workpad" and
+          get_in(tool, ["inputSchema", "required"]) == ["action"] and
+          String.contains?(tool["description"] || "", "workpad")
+      end)
+  end
+
+  defp match_dynamic_tools?(_dynamic_tools), do: false
 
   test "app server auto-approves MCP tool approval prompts when approval policy is never" do
     test_root =

@@ -31,6 +31,9 @@ Check out [elixir/README.md](elixir/README.md) for instructions on how to set up
 and run the Elixir-based Symphony implementation. You can also ask your favorite coding agent to
 help with the setup:
 
+The Elixir implementation exposes agent-side Linear helper tools, including a dedicated workpad
+helper for the single persistent execution-journal comment described in the workflow.
+
 > Set up Symphony for my repository based on
 > https://github.com/openai/symphony/blob/main/elixir/README.md
 

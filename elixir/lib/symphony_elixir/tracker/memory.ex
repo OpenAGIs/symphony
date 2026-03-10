@@ -41,6 +41,19 @@ defmodule SymphonyElixir.Tracker.Memory do
     :ok
   end
 
+  @spec ensure_workpad_comment(String.t(), String.t()) ::
+          {:ok, %{id: String.t(), body: String.t(), created?: boolean()}} | {:error, term()}
+  def ensure_workpad_comment(issue_id, body) do
+    send_event({:memory_tracker_ensure_workpad, issue_id, body})
+    {:ok, %{id: "workpad:" <> issue_id, body: body, created?: true}}
+  end
+
+  @spec update_comment(String.t(), String.t()) :: :ok | {:error, term()}
+  def update_comment(comment_id, body) do
+    send_event({:memory_tracker_comment_update, comment_id, body})
+    :ok
+  end
+
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name) do
     send_event({:memory_tracker_state_update, issue_id, state_name})

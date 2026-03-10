@@ -69,9 +69,9 @@ Instructions:
 
 Work only in the provided repository copy. Do not touch any other path.
 
-## Prerequisite: Linear MCP or `linear_graphql` tool is available
+## Prerequisite: Linear MCP or Symphony Linear tools are available
 
-The agent should be able to talk to Linear, either via a configured Linear MCP server or injected `linear_graphql` tool. If none are present, stop and ask the user to configure Linear.
+The agent should be able to talk to Linear, either via a configured Linear MCP server or injected Symphony tools such as `linear_graphql` and `linear_workpad`. If none are present, stop and ask the user to configure Linear.
 
 ## Default posture
 
@@ -142,6 +142,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
     - If found, reuse that comment; do not create a new workpad comment.
     - If not found, create one workpad comment and use it for all updates.
     - Persist the workpad comment ID and only write progress updates to that ID.
+    - Prefer the dedicated `linear_workpad` tool when available so bootstrap/reuse follows the canonical template automatically.
 2.  If arriving from `Todo`, do not delay on additional status transitions: the issue should already be `In Progress` before this step begins.
 3.  Immediately reconcile the workpad before new edits:
     - Check off items that are already done.
