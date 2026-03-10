@@ -18,11 +18,23 @@ defmodule SymphonyElixir.PromptBuilder do
     |> Solid.render!(
       %{
         "attempt" => Keyword.get(opts, :attempt),
-        "issue" => issue |> Map.from_struct() |> to_solid_map()
+        "issue" => issue |> Map.from_struct() |> to_solid_map(),
+        "workflow" => workflow_context()
       },
       @render_opts
     )
     |> IO.iodata_to_binary()
+  end
+
+  @spec workflow_context() :: map()
+  def workflow_context do
+    %{
+      "strategy" => to_solid_value(Config.workflow_strategy()),
+      "acceptance" => to_solid_value(Config.workflow_acceptance()),
+      "approvals" => to_solid_value(Config.workflow_approvals()),
+      "retry" => to_solid_value(Config.workflow_retry()),
+      "writeback" => to_solid_value(Config.workflow_writeback())
+    }
   end
 
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)

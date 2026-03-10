@@ -799,6 +799,44 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.codex_command() == "codex app-server"
   end
 
+  test "config exposes workflow dsl sections with normalized keys" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workflow_strategy: %{
+        mode: "autonomous",
+        branch: %{prefix: "feature/", required: true}
+      },
+      workflow_acceptance: [
+        %{id: "tests", required: true, command: "mix test"},
+        %{id: "push", required: true, command: "git push"}
+      ],
+      workflow_approvals: %{required: true, reviewers: ["ops", "qa"]},
+      workflow_retry: %{max_attempts: 4, backoff: %{mode: "exponential", max_ms: 300_000}},
+      workflow_writeback: %{issue_comment: true, fields: ["pr_url", "validation"]}
+    )
+
+    assert Config.workflow_strategy() == %{
+             "mode" => "autonomous",
+             "branch" => %{"prefix" => "feature/", "required" => true}
+           }
+
+    assert Config.workflow_acceptance() == [
+             %{"id" => "tests", "required" => true, "command" => "mix test"},
+             %{"id" => "push", "required" => true, "command" => "git push"}
+           ]
+
+    assert Config.workflow_approvals() == %{"required" => true, "reviewers" => ["ops", "qa"]}
+
+    assert Config.workflow_retry() == %{
+             "max_attempts" => 4,
+             "backoff" => %{"mode" => "exponential", "max_ms" => 300_000}
+           }
+
+    assert Config.workflow_writeback() == %{
+             "issue_comment" => true,
+             "fields" => ["pr_url", "validation"]
+           }
+  end
+
   test "config resolves $VAR references for env-backed secret and path values" do
     workspace_env_var = "SYMP_WORKSPACE_ROOT_#{System.unique_integer([:positive])}"
     api_key_env_var = "SYMP_LINEAR_API_KEY_#{System.unique_integer([:positive])}"
