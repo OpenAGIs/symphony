@@ -28,6 +28,15 @@ hooks:
 agent:
   max_concurrent_agents: 10
   max_turns: 20
+  capabilities: [backend, frontend]
+  max_risk_level: high
+  max_issue_budget: 5
+  max_concurrent_agents_by_capability:
+    frontend: 2
+  max_concurrent_agents_by_risk:
+    high: 1
+  max_concurrent_agents_by_budget:
+    5: 1
 codex:
   command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.3-codex app-server
   approval_policy: never

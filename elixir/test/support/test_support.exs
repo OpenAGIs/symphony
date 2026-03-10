@@ -104,7 +104,13 @@ defmodule SymphonyElixir.TestSupport do
           max_concurrent_agents: 10,
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
+          capabilities: [],
+          max_risk_level: nil,
+          max_issue_budget: nil,
           max_concurrent_agents_by_state: %{},
+          max_concurrent_agents_by_capability: %{},
+          max_concurrent_agents_by_risk: %{},
+          max_concurrent_agents_by_budget: %{},
           codex_command: "codex app-server",
           codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           codex_thread_sandbox: "workspace-write",
@@ -139,7 +145,13 @@ defmodule SymphonyElixir.TestSupport do
     max_concurrent_agents = Keyword.get(config, :max_concurrent_agents)
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
+    capabilities = Keyword.get(config, :capabilities)
+    max_risk_level = Keyword.get(config, :max_risk_level)
+    max_issue_budget = Keyword.get(config, :max_issue_budget)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
+    max_concurrent_agents_by_capability = Keyword.get(config, :max_concurrent_agents_by_capability)
+    max_concurrent_agents_by_risk = Keyword.get(config, :max_concurrent_agents_by_risk)
+    max_concurrent_agents_by_budget = Keyword.get(config, :max_concurrent_agents_by_budget)
     codex_command = Keyword.get(config, :codex_command)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
     codex_thread_sandbox = Keyword.get(config, :codex_thread_sandbox)
@@ -178,7 +190,13 @@ defmodule SymphonyElixir.TestSupport do
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",
         "  max_turns: #{yaml_value(max_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
+        "  capabilities: #{yaml_value(capabilities)}",
+        "  max_risk_level: #{yaml_value(max_risk_level)}",
+        "  max_issue_budget: #{yaml_value(max_issue_budget)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
+        "  max_concurrent_agents_by_capability: #{yaml_value(max_concurrent_agents_by_capability)}",
+        "  max_concurrent_agents_by_risk: #{yaml_value(max_concurrent_agents_by_risk)}",
+        "  max_concurrent_agents_by_budget: #{yaml_value(max_concurrent_agents_by_budget)}",
         "codex:",
         "  command: #{yaml_value(codex_command)}",
         "  approval_policy: #{yaml_value(codex_approval_policy)}",

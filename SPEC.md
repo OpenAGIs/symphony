@@ -567,7 +567,13 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `agent.max_concurrent_agents`: integer, default `10`
 - `agent.max_turns`: integer, default `20`
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
+- `agent.capabilities`: list of strings, default `[]`
+- `agent.max_risk_level`: string or null, default `nil`
+- `agent.max_issue_budget`: positive integer or null, default `nil`
 - `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
+- `agent.max_concurrent_agents_by_capability`: map of positive integers, default `{}`
+- `agent.max_concurrent_agents_by_risk`: map of positive integers, default `{}`
+- `agent.max_concurrent_agents_by_budget`: map of positive integers, default `{}`
 - `codex.command`: shell command string, default `codex app-server`
 - `codex.approval_policy`: Codex `AskForApproval` value, default implementation-defined
 - `codex.thread_sandbox`: Codex `SandboxMode` value, default implementation-defined
@@ -705,8 +711,12 @@ An issue is dispatch-eligible only if all are true:
 - Its state is in `active_states` and not in `terminal_states`.
 - It is not already in `running`.
 - It is not already in `claimed`.
+- Any required capability labels are supported by the current worker.
+- Any `risk:*` label does not exceed `agent.max_risk_level` when configured.
+- Any `budget:*` label does not exceed `agent.max_issue_budget` when configured.
 - Global concurrency slots are available.
 - Per-state concurrency slots are available.
+- Capability/risk/budget quota slots are available when the corresponding label and config are present.
 - Blocker rule for `Todo` state passes:
   - If the issue state is `Todo`, do not dispatch when any blocker is non-terminal.
 
@@ -726,6 +736,13 @@ Per-state limit:
 
 - `max_concurrent_agents_by_state[state]` if present (state key normalized)
 - otherwise fallback to global limit
+
+Scheduler-specific limits:
+
+- `max_concurrent_agents_by_capability[capability]` if present (capability normalized)
+- `max_concurrent_agents_by_risk[risk_level]` if present (risk label normalized)
+- `max_concurrent_agents_by_budget[budget]` if present (budget serialized as a string key)
+- Missing scheduler-specific limits fallback to the global limit
 
 The runtime counts issues by their current tracked state in the `running` map.
 
@@ -1184,6 +1201,9 @@ Candidate issue normalization should produce fields listed in Section 4.1.1.
 Additional normalization details:
 
 - `labels` -> lowercase strings
+- `capability:<name>` / `cap:<name>` labels -> required scheduler capabilities
+- `risk:<level>` label -> normalized risk level (`low`, `medium`, `high`, `critical`)
+- `budget:<positive-integer>` label -> issue budget estimate used for scheduler gating/quota checks
 - `blocked_by` -> derived from inverse relations where relation type is `blocks`
 - `priority` -> integer only (non-integers become null)
 - `created_at` and `updated_at` -> parse ISO-8601 timestamps
