@@ -128,7 +128,7 @@ defmodule SymphonyElixir.WorkerRuntimeOutput do
   end
 
   defp excluded_artifact?(path) do
-    path == ".git" or Enum.any?(@excluded_prefixes, &String.starts_with?(path, &1))
+    Enum.any?(@excluded_prefixes, &String.starts_with?(path, &1))
   end
 
   defp normalize_outcome(:ok), do: %{"status" => "ok"}

@@ -26,7 +26,15 @@ defmodule SymphonyElixir.WorkerRuntimeOutputTest do
       end)
 
       context = WorkerRuntimeOutput.start(%{id: "issue-1", identifier: "MT/Output-1"}, workspace)
-      :ok = WorkerRuntimeOutput.append_event(context, %{event: :session_started, timestamp: DateTime.utc_now(), nested: [%{phase: :boot}]})
+
+      :ok =
+        WorkerRuntimeOutput.append_event(context, %{
+          event: :session_started,
+          timestamp: DateTime.utc_now(),
+          nested: [%{phase: :boot}],
+          issue: %SymphonyElixir.Linear.Issue{identifier: "MT/Output-1", state: "Todo"}
+        })
+
       :ok = WorkerRuntimeOutput.finish(context, {:error, :blocked})
 
       assert is_binary(context.run_dir)
@@ -43,6 +51,7 @@ defmodule SymphonyElixir.WorkerRuntimeOutputTest do
       assert event["event"] == "session_started"
       assert is_binary(event["recorded_at"])
       assert event["nested"] == [%{"phase" => "boot"}]
+      assert event["issue"]["identifier"] == "MT/Output-1"
       assert is_binary(event["timestamp"])
     after
       File.rm_rf(test_root)
@@ -73,8 +82,8 @@ defmodule SymphonyElixir.WorkerRuntimeOutputTest do
 
     log =
       capture_log(fn ->
-        context = WorkerRuntimeOutput.start(%{"id" => "issue-only-id"}, workspace)
-        assert context.issue_identifier == "issue-only-id"
+        context = WorkerRuntimeOutput.start(%{}, workspace)
+        assert context.issue_identifier == "issue"
         assert context.run_dir == nil
         assert :ok = WorkerRuntimeOutput.append_event(context, %{})
         assert :ok = WorkerRuntimeOutput.finish(context, :ok)
@@ -102,7 +111,8 @@ defmodule SymphonyElixir.WorkerRuntimeOutputTest do
       end)
 
       context = WorkerRuntimeOutput.start(%{identifier: "MT-WRITE"}, workspace)
-      File.chmod!(context.run_dir, 0o500)
+      File.rm_rf!(context.run_dir)
+      File.write!(context.run_dir, "occupied\n")
 
       log =
         capture_log(fn ->
