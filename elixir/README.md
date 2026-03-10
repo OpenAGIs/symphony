@@ -98,6 +98,7 @@ hooks:
 agent:
   max_concurrent_agents: 10
   max_turns: 20
+  max_retry_attempts: 10
 codex:
   command: codex app-server
 ---
@@ -120,6 +121,10 @@ Notes:
   `externalSandbox`, `workspaceWrite`.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+- `agent.max_retry_attempts` caps failure/continuation retry scheduling before Symphony moves the
+  issue into an on-disk dead-letter queue. Default: `10`.
+- Retry and dead-letter queue state persist under `workspace.root/.symphony/orchestrator_queue.json`
+  so restarts can restore pending retries without a separate database.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run

@@ -567,6 +567,7 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `agent.max_concurrent_agents`: integer, default `10`
 - `agent.max_turns`: integer, default `20`
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
+- `agent.max_retry_attempts`: integer, default `10`
 - `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
 - `codex.command`: shell command string, default `codex app-server`
 - `codex.approval_policy`: Codex `AskForApproval` value, default implementation-defined
@@ -734,13 +735,15 @@ The runtime counts issues by their current tracked state in the `running` map.
 Retry entry creation:
 
 - Cancel any existing retry timer for the same issue.
-- Store `attempt`, `identifier`, `error`, `due_at_ms`, and new timer handle.
+- Store `attempt`, `identifier`, `error`, `due_at_ms`, persisted `retry_at_unix_ms`, and new timer handle.
 
 Backoff formula:
 
 - Normal continuation retries after a clean worker exit use a short fixed delay of `1000` ms.
 - Failure-driven retries use `delay = min(10000 * 2^(attempt - 1), agent.max_retry_backoff_ms)`.
 - Power is capped by the configured max retry backoff (default `300000` / 5m).
+- When `attempt > agent.max_retry_attempts`, do not schedule another retry; move the issue to the
+  dead-letter queue and record the last error for operator follow-up.
 
 Retry handling behavior:
 
@@ -1578,14 +1581,17 @@ API design notes:
 
 ### 14.3 Partial State Recovery (Restart)
 
-Current design is intentionally in-memory for scheduler state.
+Current design persists retry/dead-letter scheduler state to the filesystem and keeps only active
+worker processes in memory.
 
 After restart:
 
-- No retry timers are restored from prior process memory.
+- Retry timers are restored from `workspace.root/.symphony/orchestrator_queue.json` using persisted
+  wall-clock due times.
 - No running sessions are assumed recoverable.
 - Service recovers by:
   - startup terminal workspace cleanup
+  - restoring pending retry queue entries and dead-letter markers
   - fresh polling of active issues
   - re-dispatching eligible work
 
@@ -2095,7 +2101,6 @@ Use the same validation profiles as Section 17:
   exposes the baseline endpoints/error semantics in Section 13.7 if shipped.
 - Optional `linear_graphql` client-side tool extension exposes raw Linear GraphQL access through the
   app-server session using configured Symphony auth.
-- TODO: Persist retry queue and session metadata across process restarts.
 - TODO: Make observability settings configurable in workflow front matter without prescribing UI
   implementation details.
 - TODO: Add first-class tracker write APIs (comments/state transitions) in the orchestrator instead

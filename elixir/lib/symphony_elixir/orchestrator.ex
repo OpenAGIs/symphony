@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, OrchestratorQueueStore, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -35,6 +35,7 @@ defmodule SymphonyElixir.Orchestrator do
       completed: MapSet.new(),
       claimed: MapSet.new(),
       retry_attempts: %{},
+      dead_letters: %{},
       codex_totals: nil,
       codex_rate_limits: nil
     ]
@@ -60,6 +61,8 @@ defmodule SymphonyElixir.Orchestrator do
     }
 
     run_terminal_workspace_cleanup()
+    state = restore_persisted_queue_state(state)
+    persist_queue_state(state)
     :ok = schedule_tick(0)
 
     {:ok, state}
@@ -83,6 +86,7 @@ defmodule SymphonyElixir.Orchestrator do
     :ok = schedule_tick(state.poll_interval_ms)
 
     state = %{state | poll_check_in_progress: false, next_poll_due_at_ms: next_poll_due_at_ms}
+    persist_queue_state(state)
 
     notify_dashboard()
     {:noreply, state}
@@ -125,6 +129,7 @@ defmodule SymphonyElixir.Orchestrator do
           end
 
         Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
+        persist_queue_state(state)
 
         notify_dashboard()
         {:noreply, state}
@@ -161,6 +166,9 @@ defmodule SymphonyElixir.Orchestrator do
         :missing -> {:noreply, state}
       end
 
+    {:noreply, updated_state} = result
+    persist_queue_state(updated_state)
+
     notify_dashboard()
     result
   end
@@ -172,6 +180,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp maybe_dispatch(%State{} = state) do
     state = reconcile_running_issues(state)
+    state = reconcile_dead_letters(state)
 
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
@@ -472,13 +481,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp should_dispatch_issue?(
          %Issue{} = issue,
-         %State{running: running, claimed: claimed} = state,
+         %State{running: running, claimed: claimed, dead_letters: dead_letters} = state,
          active_states,
          terminal_states
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
       !MapSet.member?(claimed, issue.id) and
+      !Map.has_key?(dead_letters, issue.id) and
       !Map.has_key?(running, issue.id) and
       available_slots(state) > 0 and
       state_slots_available?(issue, running)
@@ -632,7 +642,8 @@ defmodule SymphonyElixir.Orchestrator do
           state
           | running: running,
             claimed: MapSet.put(state.claimed, issue.id),
-            retry_attempts: Map.delete(state.retry_attempts, issue.id)
+            retry_attempts: Map.delete(state.retry_attempts, issue.id),
+            dead_letters: Map.delete(state.dead_letters, issue.id)
         }
 
       {:error, reason} ->
@@ -670,7 +681,8 @@ defmodule SymphonyElixir.Orchestrator do
     %{
       state
       | completed: MapSet.put(state.completed, issue_id),
-        retry_attempts: Map.delete(state.retry_attempts, issue_id)
+        retry_attempts: Map.delete(state.retry_attempts, issue_id),
+        dead_letters: Map.delete(state.dead_letters, issue_id)
     }
   end
 
@@ -678,33 +690,20 @@ defmodule SymphonyElixir.Orchestrator do
        when is_binary(issue_id) and is_map(metadata) do
     previous_retry = Map.get(state.retry_attempts, issue_id, %{attempt: 0})
     next_attempt = if is_integer(attempt), do: attempt, else: previous_retry.attempt + 1
-    delay_ms = retry_delay(next_attempt, metadata)
-    old_timer = Map.get(previous_retry, :timer_ref)
-    due_at_ms = System.monotonic_time(:millisecond) + delay_ms
     identifier = pick_retry_identifier(issue_id, previous_retry, metadata)
     error = pick_retry_error(previous_retry, metadata)
 
-    if is_reference(old_timer) do
-      Process.cancel_timer(old_timer)
+    if next_attempt > Config.agent_max_retry_attempts() do
+      dead_letter_issue(state, issue_id, next_attempt, %{identifier: identifier, error: error})
+    else
+      schedule_issue_retry_at(
+        state,
+        issue_id,
+        next_attempt,
+        %{identifier: identifier, error: error},
+        retry_delay(next_attempt, metadata)
+      )
     end
-
-    timer_ref = Process.send_after(self(), {:retry_issue, issue_id}, delay_ms)
-
-    error_suffix = if is_binary(error), do: " error=#{error}", else: ""
-
-    Logger.warning("Retrying issue_id=#{issue_id} issue_identifier=#{identifier} in #{delay_ms}ms (attempt #{next_attempt})#{error_suffix}")
-
-    %{
-      state
-      | retry_attempts:
-          Map.put(state.retry_attempts, issue_id, %{
-            attempt: next_attempt,
-            timer_ref: timer_ref,
-            due_at_ms: due_at_ms,
-            identifier: identifier,
-            error: error
-          })
-    }
   end
 
   defp pop_retry_attempt_state(%State{} = state, issue_id) do
@@ -750,7 +749,7 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
         cleanup_issue_workspace(issue.identifier)
-        {:noreply, release_issue_claim(state, issue_id)}
+        {:noreply, clear_dead_letter(release_issue_claim(state, issue_id), issue_id)}
 
       retry_candidate_issue?(issue, terminal_states) ->
         handle_active_retry(state, issue, attempt, metadata)
@@ -758,13 +757,13 @@ defmodule SymphonyElixir.Orchestrator do
       true ->
         Logger.debug("Issue left active states, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier}")
 
-        {:noreply, release_issue_claim(state, issue_id)}
+        {:noreply, clear_dead_letter(release_issue_claim(state, issue_id), issue_id)}
     end
   end
 
   defp handle_retry_issue_lookup(nil, state, issue_id, _attempt, _metadata) do
     Logger.debug("Issue no longer visible, removing claim issue_id=#{issue_id}")
-    {:noreply, release_issue_claim(state, issue_id)}
+    {:noreply, clear_dead_letter(release_issue_claim(state, issue_id), issue_id)}
   end
 
   defp cleanup_issue_workspace(identifier) when is_binary(identifier) do
@@ -815,7 +814,89 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp release_issue_claim(%State{} = state, issue_id) do
-    %{state | claimed: MapSet.delete(state.claimed, issue_id)}
+    %{state | claimed: MapSet.delete(state.claimed, issue_id), retry_attempts: Map.delete(state.retry_attempts, issue_id)}
+  end
+
+  defp clear_dead_letter(%State{} = state, issue_id) when is_binary(issue_id) do
+    %{state | dead_letters: Map.delete(state.dead_letters, issue_id)}
+  end
+
+  defp schedule_issue_retry_at(%State{} = state, issue_id, attempt, metadata, delay_ms)
+       when is_binary(issue_id) and is_integer(attempt) and attempt > 0 and is_integer(delay_ms) and delay_ms >= 0 do
+    previous_retry = Map.get(state.retry_attempts, issue_id, %{})
+    old_timer = Map.get(previous_retry, :timer_ref)
+
+    if is_reference(old_timer) do
+      Process.cancel_timer(old_timer)
+    end
+
+    due_at_ms = System.monotonic_time(:millisecond) + delay_ms
+    retry_at_unix_ms = System.system_time(:millisecond) + delay_ms
+    timer_ref = Process.send_after(self(), {:retry_issue, issue_id}, delay_ms)
+    error_suffix = if is_binary(metadata[:error]), do: " error=#{metadata[:error]}", else: ""
+
+    Logger.warning("Retrying issue_id=#{issue_id} issue_identifier=#{metadata[:identifier]} in #{delay_ms}ms (attempt #{attempt})#{error_suffix}")
+
+    %{
+      state
+      | retry_attempts:
+          Map.put(state.retry_attempts, issue_id, %{
+            attempt: attempt,
+            timer_ref: timer_ref,
+            due_at_ms: due_at_ms,
+            retry_at_unix_ms: retry_at_unix_ms,
+            identifier: metadata[:identifier],
+            error: metadata[:error]
+          }),
+        dead_letters: Map.delete(state.dead_letters, issue_id)
+    }
+  end
+
+  defp dead_letter_issue(%State{} = state, issue_id, attempt, metadata)
+       when is_binary(issue_id) and is_integer(attempt) and attempt > 0 do
+    if previous_timer = get_in(state.retry_attempts, [issue_id, :timer_ref]) do
+      Process.cancel_timer(previous_timer)
+    end
+
+    identifier = metadata[:identifier] || issue_id
+    error = metadata[:error]
+
+    Logger.error("Issue exhausted retries and moved to dead letter queue issue_id=#{issue_id} issue_identifier=#{identifier} attempt=#{attempt} error=#{inspect(error)}")
+
+    note_dead_letter(issue_id, identifier, attempt, error)
+
+    %{
+      state
+      | claimed: MapSet.delete(state.claimed, issue_id),
+        retry_attempts: Map.delete(state.retry_attempts, issue_id),
+        dead_letters:
+          Map.put(state.dead_letters, issue_id, %{
+            attempt: attempt,
+            identifier: identifier,
+            error: error,
+            failed_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+          })
+    }
+  end
+
+  defp note_dead_letter(issue_id, identifier, attempt, error) do
+    message =
+      [
+        "Symphony moved this issue to the dead-letter queue after #{attempt} failed attempts.",
+        error && "Last error: #{error}",
+        "Move the issue back into an active state or request a refresh after addressing the blocker."
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join("\n")
+
+    case Tracker.create_comment(issue_id, message) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Failed to record dead-letter comment issue_id=#{issue_id} issue_identifier=#{identifier}: #{inspect(reason)}")
+        :ok
+    end
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
@@ -847,6 +928,104 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp pick_retry_error(previous_retry, metadata) do
     metadata[:error] || Map.get(previous_retry, :error)
+  end
+
+  defp restore_persisted_queue_state(%State{} = state) do
+    case OrchestratorQueueStore.load() do
+      {:ok, persisted_state} ->
+        now_ms = System.system_time(:millisecond)
+
+        restored_retry_attempts =
+          Enum.reduce(persisted_state.retry_attempts, %{}, fn {issue_id, retry_entry}, retry_attempts ->
+            delay_ms = max(0, retry_entry.retry_at_unix_ms - now_ms)
+
+            scheduled_state =
+              schedule_issue_retry_at(
+                %{state | retry_attempts: retry_attempts},
+                issue_id,
+                retry_entry.attempt,
+                retry_entry,
+                delay_ms
+              )
+
+            scheduled_state.retry_attempts
+          end)
+
+        %{state | retry_attempts: restored_retry_attempts, dead_letters: persisted_state.dead_letters}
+
+      {:error, reason} ->
+        Logger.warning("Failed loading persisted orchestrator queue state: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp persist_queue_state(%State{} = state) do
+    persisted_retry_attempts =
+      Enum.into(state.retry_attempts, %{}, fn {issue_id, retry_entry} ->
+        {issue_id,
+         %{
+           attempt: retry_entry.attempt,
+           identifier: retry_entry.identifier,
+           retry_at_unix_ms: retry_entry.retry_at_unix_ms,
+           error: Map.get(retry_entry, :error)
+         }}
+      end)
+
+    persisted_dead_letters =
+      Enum.into(state.dead_letters, %{}, fn {issue_id, dead_letter_entry} ->
+        {issue_id,
+         %{
+           attempt: dead_letter_entry.attempt,
+           identifier: dead_letter_entry.identifier,
+           failed_at: dead_letter_entry.failed_at,
+           error: Map.get(dead_letter_entry, :error)
+         }}
+      end)
+
+    OrchestratorQueueStore.persist(%{
+      retry_attempts: persisted_retry_attempts,
+      dead_letters: persisted_dead_letters
+    })
+
+    state
+  end
+
+  defp reconcile_dead_letters(%State{} = state) do
+    dead_letter_ids = Map.keys(state.dead_letters)
+
+    if dead_letter_ids == [] do
+      state
+    else
+      case Tracker.fetch_issue_states_by_ids(dead_letter_ids) do
+        {:ok, issues} ->
+          reconcile_visible_dead_letters(state, dead_letter_ids, issues)
+
+        {:error, reason} ->
+          Logger.debug("Failed to refresh dead-letter issue states: #{inspect(reason)}; keeping dead-letter queue")
+          state
+      end
+    end
+  end
+
+  defp reconcile_visible_dead_letters(state, dead_letter_ids, issues) do
+    visible_issue_ids = MapSet.new(Enum.map(issues, & &1.id))
+
+    state =
+      Enum.reduce(issues, state, fn issue, state_acc ->
+        if retry_candidate_issue?(issue, terminal_state_set()) do
+          state_acc
+        else
+          clear_dead_letter(state_acc, issue.id)
+        end
+      end)
+
+    Enum.reduce(dead_letter_ids, state, fn issue_id, state_acc ->
+      if MapSet.member?(visible_issue_ids, issue_id) do
+        state_acc
+      else
+        clear_dead_letter(state_acc, issue_id)
+      end
+    end)
   end
 
   defp find_issue_by_id(issues, issue_id) when is_binary(issue_id) do
@@ -952,10 +1131,23 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
+    dead_letters =
+      state.dead_letters
+      |> Enum.map(fn {issue_id, dead_letter} ->
+        %{
+          issue_id: issue_id,
+          attempt: dead_letter.attempt,
+          identifier: dead_letter.identifier,
+          error: Map.get(dead_letter, :error),
+          failed_at: Map.get(dead_letter, :failed_at)
+        }
+      end)
+
     {:reply,
      %{
        running: running,
        retrying: retrying,
+       dead_letters: dead_letters,
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
        polling: %{

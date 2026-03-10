@@ -15,10 +15,12 @@ defmodule SymphonyElixirWeb.Presenter do
           generated_at: generated_at,
           counts: %{
             running: length(snapshot.running),
-            retrying: length(snapshot.retrying)
+            retrying: length(snapshot.retrying),
+            dead_lettered: length(Map.get(snapshot, :dead_letters, []))
           },
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
+          dead_letters: Enum.map(Map.get(snapshot, :dead_letters, []), &dead_letter_entry_payload/1),
           codex_totals: snapshot.codex_totals,
           rate_limits: snapshot.rate_limits
         }
@@ -119,6 +121,16 @@ defmodule SymphonyElixirWeb.Presenter do
       issue_identifier: entry.identifier,
       attempt: entry.attempt,
       due_at: due_at_iso8601(entry.due_in_ms),
+      error: entry.error
+    }
+  end
+
+  defp dead_letter_entry_payload(entry) do
+    %{
+      issue_id: entry.issue_id,
+      issue_identifier: entry.identifier,
+      attempt: entry.attempt,
+      failed_at: entry.failed_at,
       error: entry.error
     }
   end
