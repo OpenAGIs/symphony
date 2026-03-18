@@ -53,6 +53,7 @@ defmodule SymphonyElixir.TestSupport do
 
   def write_workflow_file!(path, overrides \\ []) do
     workflow = workflow_content(overrides)
+    File.mkdir_p!(Path.dirname(path))
     File.write!(path, workflow)
 
     if Process.whereis(SymphonyElixir.WorkflowStore) do
@@ -70,21 +71,9 @@ defmodule SymphonyElixir.TestSupport do
   def restore_env(key, value), do: System.put_env(key, value)
 
   def stop_default_http_server do
-    case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
-           {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
-           _child -> false
-         end) do
-      {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) ->
-        :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.HttpServer)
-
-        if Process.alive?(pid) do
-          Process.exit(pid, :normal)
-        end
-
-        :ok
-
-      _ ->
-        :ok
+    case Process.whereis(SymphonyElixir.Supervisor) do
+      nil -> :ok
+      supervisor -> stop_default_http_server(supervisor)
     end
   end
 
@@ -269,5 +258,24 @@ defmodule SymphonyElixir.TestSupport do
       |> Enum.map_join("\n", &("    " <> &1))
 
     "  #{name}: |\n#{indented}"
+  end
+
+  defp stop_default_http_server(supervisor) when is_pid(supervisor) do
+    case Enum.find(Supervisor.which_children(supervisor), fn
+           {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
+           _child -> false
+         end) do
+      {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) ->
+        :ok = Supervisor.terminate_child(supervisor, SymphonyElixir.HttpServer)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+
+        :ok
+
+      _ ->
+        :ok
+    end
   end
 end

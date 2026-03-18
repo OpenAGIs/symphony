@@ -104,6 +104,19 @@ defmodule SymphonyElixir.LocalIssueCLI do
     |> dispatch_comment(issue_ref, opts)
   end
 
+  defp dispatch(["release", issue_ref], opts) do
+    with_local_tracker(opts, fn _path ->
+      case Local.release_issue_claim(issue_ref) do
+        :ok ->
+          IO.puts("Released lease on #{issue_ref}")
+          :ok
+
+        {:error, reason} ->
+          {:error, format_tracker_error("Failed to release local issue claim", reason)}
+      end
+    end)
+  end
+
   defp dispatch(_argv, _opts), do: {:error, usage()}
 
   defp dispatch_comment("", _issue_ref, _opts), do: {:error, "Comment body cannot be empty"}
@@ -186,6 +199,10 @@ defmodule SymphonyElixir.LocalIssueCLI do
         IO.puts("  labels=#{Enum.join(issue.labels, ", ")}")
       end
 
+      if issue.claimed_by do
+        IO.puts("  claim=#{issue.claimed_by} expires=#{format_datetime(issue.lease_expires_at)}")
+      end
+
       if issue.description do
         IO.puts("  #{String.trim(issue.description)}")
       end
@@ -218,6 +235,7 @@ defmodule SymphonyElixir.LocalIssueCLI do
       symphony issue create --title TITLE [--description TEXT] [--priority N] [--labels a,b] [--state STATE] [--identifier ID] [--workflow PATH]
       symphony issue state ISSUE_REF STATE [--workflow PATH]
       symphony issue comment ISSUE_REF BODY... [--workflow PATH]
+      symphony issue release ISSUE_REF [--workflow PATH]
     """
   end
 end

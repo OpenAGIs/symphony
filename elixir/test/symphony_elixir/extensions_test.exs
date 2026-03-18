@@ -194,6 +194,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["issue-1"])
     assert :ok = SymphonyElixir.Tracker.create_comment("issue-1", "comment")
     assert :ok = SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
+    assert :ok = SymphonyElixir.Tracker.claim_issue("issue-1", "runtime-a")
+    assert :ok = SymphonyElixir.Tracker.release_issue_claim("issue-1", "runtime-a")
     assert_receive {:memory_tracker_comment, "issue-1", "comment"}
     assert_receive {:memory_tracker_state_update, "issue-1", "Done"}
 
@@ -201,11 +203,34 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert :ok = Memory.create_comment("issue-1", "quiet")
     assert :ok = Memory.update_issue_state("issue-1", "Quiet")
 
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "local", tracker_path: "./issues.json")
+    local_tracker_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "issues.json")
+
+    File.write!(
+      local_tracker_path,
+      Jason.encode!(
+        %{
+          "issues" => [
+            %{
+              "id" => "local-claim-1",
+              "identifier" => "LOCAL-CLAIM-1",
+              "title" => "Claimable issue",
+              "state" => "Todo"
+            }
+          ]
+        },
+        pretty: true
+      )
+    )
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "local", tracker_path: local_tracker_path)
     assert SymphonyElixir.Tracker.adapter() == SymphonyElixir.Tracker.Local
+    assert :ok = SymphonyElixir.Tracker.claim_issue("local-claim-1", "runtime-a")
+    assert :ok = SymphonyElixir.Tracker.release_issue_claim("local-claim-1")
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
+    assert :ok = SymphonyElixir.Tracker.claim_issue("issue-1", "runtime-a")
+    assert :ok = SymphonyElixir.Tracker.release_issue_claim("issue-1", "runtime-a")
   end
 
   test "linear adapter delegates reads and validates mutation responses" do
@@ -635,7 +660,10 @@ defmodule SymphonyElixir.ExtensionsTest do
               "description" => "Expose issue controls in the dashboard.",
               "priority" => 1,
               "state" => "Todo",
-              "labels" => ["dashboard", "local"]
+              "labels" => ["dashboard", "local"],
+              "claimed_by" => "runtime-a",
+              "claimed_at" => "2026-03-19T00:00:00Z",
+              "lease_expires_at" => "2026-03-19T00:05:00Z"
             }
           ]
         },
@@ -666,6 +694,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Move the workflow UI local"
     assert html =~ tracker_path
     assert html =~ Path.join(Config.workspace_root(), "LOCAL-1")
+    assert html =~ "runtime-a"
 
     local_issue_payload = json_response(get(build_conn(), "/api/v1/LOCAL-1"), 200)
 
@@ -673,6 +702,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert local_issue_payload["tracked"]["identifier"] == "LOCAL-1"
     assert local_issue_payload["tracked"]["title"] == "Move the workflow UI local"
     assert local_issue_payload["workspace"]["path"] == Path.join(Config.workspace_root(), "LOCAL-1")
+    assert local_issue_payload["tracked"]["claimed_by"] == "runtime-a"
+    assert local_issue_payload["tracked"]["lease_expires_at"] == "2026-03-19T00:05:00Z"
 
     created_html =
       view

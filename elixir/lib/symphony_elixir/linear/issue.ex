@@ -13,11 +13,14 @@ defmodule SymphonyElixir.Linear.Issue do
     :branch_name,
     :url,
     :assignee_id,
+    :claimed_by,
     blocked_by: [],
     labels: [],
     assigned_to_worker: true,
     created_at: nil,
-    updated_at: nil
+    updated_at: nil,
+    claimed_at: nil,
+    lease_expires_at: nil
   ]
 
   @type t :: %__MODULE__{
@@ -30,10 +33,13 @@ defmodule SymphonyElixir.Linear.Issue do
           branch_name: String.t() | nil,
           url: String.t() | nil,
           assignee_id: String.t() | nil,
+          claimed_by: String.t() | nil,
           labels: [String.t()],
           assigned_to_worker: boolean(),
           created_at: DateTime.t() | nil,
-          updated_at: DateTime.t() | nil
+          updated_at: DateTime.t() | nil,
+          claimed_at: DateTime.t() | nil,
+          lease_expires_at: DateTime.t() | nil
         }
 
   @spec label_names(t()) :: [String.t()]

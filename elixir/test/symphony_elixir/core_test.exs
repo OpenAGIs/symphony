@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Tracker.Local
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -360,6 +362,90 @@ defmodule SymphonyElixir.CoreTest do
       refute File.exists?(workspace)
     after
       File.rm_rf(test_root)
+    end
+  end
+
+  test "terminal reconcile releases persisted local tracker claims" do
+    tracker_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-terminal-lease-release-#{System.unique_integer([:positive])}"
+      )
+
+    tracker_path = Path.join(tracker_root, "issues.json")
+    issue_id = "issue-lease-release"
+    issue_identifier = "MT-LEASE-1"
+
+    try do
+      File.mkdir_p!(tracker_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "local",
+        tracker_path: tracker_path,
+        tracker_api_token: nil,
+        tracker_project_slug: nil
+      )
+
+      File.write!(
+        tracker_path,
+        Jason.encode!(
+          %{
+            "issues" => [
+              %{
+                "id" => issue_id,
+                "identifier" => issue_identifier,
+                "title" => "Claimed issue",
+                "state" => "In Progress"
+              }
+            ]
+          },
+          pretty: true
+        )
+      )
+
+      assert :ok = Local.claim_issue(issue_id, "runtime-a", ttl_ms: 60_000)
+
+      agent_pid =
+        spawn(fn ->
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      state = %Orchestrator.State{
+        lease_owner: "runtime-a",
+        running: %{
+          issue_id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: issue_identifier,
+            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([issue_id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        state: "Done",
+        title: "Released claim",
+        description: "Terminal state should clear claim",
+        labels: []
+      }
+
+      updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+      refute Map.has_key?(updated_state.running, issue_id)
+      refute MapSet.member?(updated_state.claimed, issue_id)
+
+      assert {:ok, [%Issue{id: ^issue_id, claimed_by: nil, lease_expires_at: nil}]} =
+               Local.fetch_issue_states_by_ids([issue_id])
+    after
+      File.rm_rf(tracker_root)
     end
   end
 

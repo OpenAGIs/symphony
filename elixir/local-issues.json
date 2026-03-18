@@ -1,54 +1,92 @@
 {
   "issues": [
     {
+      "assigned_to_worker": true,
+      "description": "Default the local workflow to a browser-accessible dashboard port and add a CLI entry that prints the panel URL for operators.",
       "id": "local-1",
       "identifier": "LOCAL-1",
-      "title": "Expose the local dashboard through a browser-friendly entrypoint",
-      "description": "Default the local workflow to a browser-accessible dashboard port and add a CLI entry that prints the panel URL for operators.",
+      "labels": [
+        "dashboard",
+        "local",
+        "workflow"
+      ],
       "priority": 1,
       "state": "Done",
-      "labels": ["dashboard", "local", "workflow"],
-      "assigned_to_worker": true
+      "title": "Expose the local dashboard through a browser-friendly entrypoint"
     },
     {
+      "assigned_to_worker": true,
+      "description": "Neutralize prompt fallback copy in config, prompt builder, and agent runner so local-tracker runs never regress to Linear-specific instructions.",
       "id": "local-2",
       "identifier": "LOCAL-2",
-      "title": "Remove remaining Linear wording from fallback prompts and continuation text",
-      "description": "Neutralize prompt fallback copy in config, prompt builder, and agent runner so local-tracker runs never regress to Linear-specific instructions.",
+      "labels": [
+        "prompt",
+        "local",
+        "cleanup"
+      ],
       "priority": 1,
       "state": "Done",
-      "labels": ["prompt", "local", "cleanup"],
-      "assigned_to_worker": true
+      "title": "Remove remaining Linear wording from fallback prompts and continuation text"
     },
     {
+      "assigned_to_worker": true,
+      "description": "Update status dashboard, orchestrator logs, and workspace cleanup comments so the local tracker remains the only operator mental model.",
       "id": "local-3",
       "identifier": "LOCAL-3",
-      "title": "Refactor operator-facing dashboard and cleanup copy away from Linear",
-      "description": "Update status dashboard, orchestrator logs, and workspace cleanup comments so the local tracker remains the only operator mental model.",
+      "labels": [
+        "observability",
+        "cleanup",
+        "local"
+      ],
       "priority": 1,
       "state": "Done",
-      "labels": ["observability", "cleanup", "local"],
-      "assigned_to_worker": true
+      "title": "Refactor operator-facing dashboard and cleanup copy away from Linear"
     },
     {
+      "assigned_to_worker": true,
+      "description": "Stop advertising Linear-only dynamic tools during local runs and replace them with local issue tracker commands or no-op-safe alternatives.",
       "id": "local-4",
       "identifier": "LOCAL-4",
-      "title": "Replace the linear_graphql dynamic tool with a local tracker-safe tool surface",
-      "description": "Stop advertising Linear-only dynamic tools during local runs and replace them with local issue tracker commands or no-op-safe alternatives.",
+      "labels": [
+        "tools",
+        "local",
+        "runtime"
+      ],
       "priority": 1,
-      "state": "Todo",
-      "labels": ["tools", "local", "runtime"],
-      "assigned_to_worker": true
+      "state": "Done",
+      "title": "Replace the linear_graphql dynamic tool with a local tracker-safe tool surface",
+      "updated_at": "2026-03-18T18:25:06Z"
     },
     {
+      "assigned_to_worker": true,
+      "description": "Move core issue docs and types toward tracker-neutral names so the local workflow is the only mainline abstraction.",
       "id": "local-5",
       "identifier": "LOCAL-5",
-      "title": "Rename the core issue model away from Linear.Issue",
-      "description": "Move core issue docs and types toward tracker-neutral names so the local workflow is the only mainline abstraction.",
+      "labels": [
+        "types",
+        "refactor",
+        "local"
+      ],
       "priority": 2,
       "state": "Todo",
-      "labels": ["types", "refactor", "local"],
-      "assigned_to_worker": true
+      "title": "Rename the core issue model away from Linear.Issue",
+      "updated_at": "2026-03-18T18:25:06Z"
+    },
+    {
+      "assigned_to_worker": true,
+      "created_at": "2026-03-18T17:32:14Z",
+      "description": "Persist claim/lease ownership in the local tracker so multiple Symphony runtimes can safely work from the same issue store without duplicate dispatch. Include orchestrator claim/release/heartbeat behavior and operator-visible lease details.",
+      "id": "local-6",
+      "identifier": "LOCAL-6",
+      "labels": [
+        "local",
+        "parallel",
+        "runtime"
+      ],
+      "priority": 1,
+      "state": "Merging",
+      "title": "Add tracker-backed issue leasing for distributed local runs",
+      "updated_at": "2026-03-19T02:48:00Z"
     }
   ]
 }

@@ -209,7 +209,10 @@ defmodule SymphonyElixirWeb.Presenter do
       blocked_by: issue.blocked_by || [],
       assigned_to_worker: Map.get(issue, :assigned_to_worker, true),
       created_at: iso8601(issue.created_at),
-      updated_at: iso8601(issue.updated_at)
+      updated_at: iso8601(issue.updated_at),
+      claimed_by: issue.claimed_by,
+      claimed_at: iso8601(issue.claimed_at),
+      lease_expires_at: iso8601(issue.lease_expires_at)
     }
   end
 

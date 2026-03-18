@@ -162,6 +162,55 @@ defmodule SymphonyElixir.LocalIssueCLITest do
     assert list_output =~ "tracked locally"
   end
 
+  test "local issue cli shows active claims and releases them" do
+    tracker_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "issues.json")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: tracker_path,
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    File.write!(
+      tracker_path,
+      Jason.encode!(
+        %{
+          "issues" => [
+            %{
+              "id" => "local-claim-1",
+              "identifier" => "LOCAL-CLAIM-1",
+              "title" => "Claimed issue",
+              "state" => "Todo",
+              "claimed_by" => "runtime-a",
+              "lease_expires_at" => "2026-03-19T12:00:00Z"
+            }
+          ]
+        },
+        pretty: true
+      )
+    )
+
+    list_output =
+      capture_io(fn ->
+        assert :ok = LocalIssueCLI.evaluate(["list"])
+      end)
+
+    assert list_output =~ "claim=runtime-a expires=2026-03-19T12:00:00Z"
+
+    release_output =
+      capture_io(fn ->
+        assert :ok = LocalIssueCLI.evaluate(["release", "LOCAL-CLAIM-1"])
+      end)
+
+    assert release_output =~ "Released lease on LOCAL-CLAIM-1"
+    assert {:ok, [%Issue{claimed_by: nil, lease_expires_at: nil}]} = Local.list_issues()
+
+    assert {:error, message} = LocalIssueCLI.evaluate(["release", "MISSING"])
+    assert message =~ "Failed to release local issue claim"
+    assert message =~ "issue not found"
+  end
+
   test "local issue cli reports workflow loading and configuration problems" do
     workflow_dir = Path.dirname(Workflow.workflow_file_path())
     missing_workflow = Path.join(workflow_dir, "MISSING_WORKFLOW.md")

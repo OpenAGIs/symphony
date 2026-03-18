@@ -4,6 +4,7 @@ defmodule SymphonyElixir.Tracker do
   """
 
   alias SymphonyElixir.Config
+  alias SymphonyElixir.Tracker.Local
 
   @callback fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
   @callback fetch_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}
@@ -34,6 +35,28 @@ defmodule SymphonyElixir.Tracker do
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name) do
     adapter().update_issue_state(issue_id, state_name)
+  end
+
+  @spec claim_issue(String.t(), String.t(), keyword()) :: :ok | {:error, term()}
+  def claim_issue(issue_id, owner, opts \\ []) when is_binary(issue_id) and is_binary(owner) do
+    case adapter() do
+      Local ->
+        Local.claim_issue(issue_id, owner, opts)
+
+      _other ->
+        :ok
+    end
+  end
+
+  @spec release_issue_claim(String.t(), String.t() | nil) :: :ok | {:error, term()}
+  def release_issue_claim(issue_id, owner \\ nil) when is_binary(issue_id) do
+    case adapter() do
+      Local ->
+        Local.release_issue_claim(issue_id, owner)
+
+      _other ->
+        :ok
+    end
   end
 
   @spec adapter() :: module()
