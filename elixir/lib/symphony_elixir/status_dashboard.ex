@@ -331,8 +331,8 @@ defmodule SymphonyElixir.StatusDashboard do
     case snapshot_data do
       {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
         rate_limits = Map.get(snapshot, :rate_limits)
-        project_link_lines = format_project_link_lines()
-        project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
+        tracker_link_lines = format_tracker_link_lines()
+        tracker_refresh_line = format_tracker_refresh_line(Map.get(snapshot, :polling))
         codex_input_tokens = Map.get(codex_totals, :input_tokens, 0)
         codex_output_tokens = Map.get(codex_totals, :output_tokens, 0)
         codex_total_tokens = Map.get(codex_totals, :total_tokens, 0)
@@ -360,8 +360,8 @@ defmodule SymphonyElixir.StatusDashboard do
              colorize(" | ", @ansi_gray) <>
              colorize("total #{format_count(codex_total_tokens)}", @ansi_yellow),
            colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
-           project_link_lines,
-           project_refresh_line,
+           tracker_link_lines,
+           tracker_refresh_line,
            colorize("├─ Running", @ansi_bold),
            "│",
            running_table_header_row(running_event_width),
@@ -380,8 +380,8 @@ defmodule SymphonyElixir.StatusDashboard do
           colorize("╭─ SYMPHONY STATUS", @ansi_bold),
           colorize("│ Orchestrator snapshot unavailable", @ansi_red),
           colorize("│ Throughput: ", @ansi_bold) <> colorize("#{format_tps(tps)} tps", @ansi_cyan),
-          format_project_link_lines(),
-          format_project_refresh_line(nil),
+          format_tracker_link_lines(),
+          format_tracker_refresh_line(nil),
           closing_border()
         ]
         |> List.flatten()
@@ -389,8 +389,8 @@ defmodule SymphonyElixir.StatusDashboard do
     end
   end
 
-  defp format_project_link_lines do
-    project_part =
+  defp format_tracker_link_lines do
+    tracker_part =
       case Config.linear_project_slug() do
         project_slug when is_binary(project_slug) and project_slug != "" ->
           colorize(linear_project_url(project_slug), @ansi_cyan)
@@ -399,28 +399,28 @@ defmodule SymphonyElixir.StatusDashboard do
           colorize("n/a", @ansi_gray)
       end
 
-    project_line = colorize("│ Project: ", @ansi_bold) <> project_part
+    tracker_line = colorize("│ Tracker: ", @ansi_bold) <> tracker_part
 
     case dashboard_url() do
       url when is_binary(url) ->
-        [project_line, colorize("│ Dashboard: ", @ansi_bold) <> colorize(url, @ansi_cyan)]
+        [tracker_line, colorize("│ Dashboard: ", @ansi_bold) <> colorize(url, @ansi_cyan)]
 
       _ ->
-        [project_line]
+        [tracker_line]
     end
   end
 
-  defp format_project_refresh_line(%{checking?: true}) do
+  defp format_tracker_refresh_line(%{checking?: true}) do
     colorize("│ Next refresh: ", @ansi_bold) <> colorize("checking now…", @ansi_cyan)
   end
 
-  defp format_project_refresh_line(%{next_poll_in_ms: due_in_ms}) when is_integer(due_in_ms) do
+  defp format_tracker_refresh_line(%{next_poll_in_ms: due_in_ms}) when is_integer(due_in_ms) do
     due_in_ms = max(due_in_ms, 0)
     seconds = div(due_in_ms + 999, 1000)
     colorize("│ Next refresh: ", @ansi_bold) <> colorize("#{seconds}s", @ansi_cyan)
   end
 
-  defp format_project_refresh_line(_) do
+  defp format_tracker_refresh_line(_) do
     colorize("│ Next refresh: ", @ansi_bold) <> colorize("n/a", @ansi_gray)
   end
 
@@ -1588,6 +1588,8 @@ defmodule SymphonyElixir.StatusDashboard do
         map_value(usage, [
           "total_tokens",
           :total_tokens,
+          "total_token_usage",
+          :total_token_usage,
           "total",
           :total,
           "totalTokens",
@@ -1808,8 +1810,16 @@ defmodule SymphonyElixir.StatusDashboard do
       [:params, :msg, :payload, :info, :total_token_usage],
       ["params", "msg", "info", "total_token_usage"],
       [:params, :msg, :info, :total_token_usage],
+      ["params", "msg", "payload", "info"],
+      [:params, :msg, :payload, :info],
+      ["params", "msg", "info"],
+      [:params, :msg, :info],
       ["params", "tokenUsage", "total"],
-      [:params, :tokenUsage, :total]
+      [:params, :tokenUsage, :total],
+      ["tokenUsage", "total"],
+      [:tokenUsage, :total],
+      ["params", "usage"],
+      [:params, :usage]
     ]
   end
 

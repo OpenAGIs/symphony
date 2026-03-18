@@ -168,6 +168,21 @@ defmodule SymphonyElixir.Linear.Client do
          {:ok, %{status: 200, body: body}} <- request_fun.(payload, headers) do
       {:ok, body}
     else
+      {:ok, %{status: 400, body: body} = response} ->
+        case body do
+          %{"errors" => [%{"extensions" => %{"code" => "RATELIMITED"}} | _]} ->
+            Logger.warning("Linear API RATELIMITED: quota exceeded (5,000 req/hr). Polling will continue but may fail until the hour resets.")
+            {:error, :linear_rate_limited}
+
+          _ ->
+            Logger.error(
+              "Linear GraphQL request failed status=400" <>
+                linear_error_context(payload, response)
+            )
+
+            {:error, {:linear_api_status, 400}}
+        end
+
       {:ok, response} ->
         Logger.error(
           "Linear GraphQL request failed status=#{response.status}" <>
@@ -342,7 +357,8 @@ defmodule SymphonyElixir.Linear.Client do
     Req.post(Config.linear_endpoint(),
       headers: headers,
       json: payload,
-      connect_options: [timeout: 30_000]
+      connect_options: [timeout: 60_000],
+      receive_timeout: 60_000
     )
   end
 
@@ -455,21 +471,40 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp resolve_viewer_assignee_filter do
+    alias SymphonyElixir.Linear.MetadataCache
+
+    case MetadataCache.get_viewer_id() do
+      id when is_binary(id) ->
+        {:ok, %{configured_assignee: "me", match_values: MapSet.new([id])}}
+
+      nil ->
+        fetch_viewer_assignee_filter()
+    end
+  end
+
+  defp fetch_viewer_assignee_filter do
     case graphql(@viewer_query, %{}) do
       {:ok, %{"data" => %{"viewer" => viewer}}} when is_map(viewer) ->
-        case assignee_id(viewer) do
-          nil ->
-            {:error, :missing_linear_viewer_identity}
-
-          viewer_id ->
-            {:ok, %{configured_assignee: "me", match_values: MapSet.new([viewer_id])}}
-        end
+        cache_viewer_assignee_filter(viewer)
 
       {:ok, _body} ->
         {:error, :missing_linear_viewer_identity}
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp cache_viewer_assignee_filter(viewer) do
+    alias SymphonyElixir.Linear.MetadataCache
+
+    case assignee_id(viewer) do
+      nil ->
+        {:error, :missing_linear_viewer_identity}
+
+      viewer_id ->
+        MetadataCache.put_viewer_id(viewer_id)
+        {:ok, %{configured_assignee: "me", match_values: MapSet.new([viewer_id])}}
     end
   end
 

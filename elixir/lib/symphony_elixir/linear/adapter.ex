@@ -78,14 +78,23 @@ defmodule SymphonyElixir.Linear.Adapter do
   end
 
   defp resolve_state_id(issue_id, state_name) do
-    with {:ok, response} <-
-           client_module().graphql(@state_lookup_query, %{issueId: issue_id, stateName: state_name}),
-         state_id when is_binary(state_id) <-
-           get_in(response, ["data", "issue", "team", "states", "nodes", Access.at(0), "id"]) do
-      {:ok, state_id}
-    else
-      {:error, reason} -> {:error, reason}
-      _ -> {:error, :state_not_found}
+    alias SymphonyElixir.Linear.MetadataCache
+
+    case MetadataCache.get_state_id(state_name) do
+      id when is_binary(id) ->
+        {:ok, id}
+
+      nil ->
+        with {:ok, response} <-
+               client_module().graphql(@state_lookup_query, %{issueId: issue_id, stateName: state_name}),
+             state_id when is_binary(state_id) <-
+               get_in(response, ["data", "issue", "team", "states", "nodes", Access.at(0), "id"]) do
+          MetadataCache.put_state_id(state_name, state_id)
+          {:ok, state_id}
+        else
+          {:error, reason} -> {:error, reason}
+          _ -> {:error, :state_not_found}
+        end
     end
   end
 end

@@ -4,7 +4,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SymphonyElixir.Linear.Adapter
+  alias SymphonyElixir.Linear.{Adapter, MetadataCache}
   alias SymphonyElixir.Tracker.Memory
 
   @endpoint SymphonyElixirWeb.Endpoint
@@ -210,6 +210,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   test "linear adapter delegates reads and validates mutation responses" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    restart_metadata_cache!()
 
     assert {:ok, [:candidate]} = Adapter.fetch_candidate_issues()
     assert_receive :fetch_candidate_issues_called
@@ -246,6 +247,22 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     Process.put({FakeLinearClient, :graphql_result}, :unexpected)
     assert {:error, :comment_create_failed} = Adapter.create_comment("issue-1", "odd")
+
+    :ok = MetadataCache.put_state_id("Cached", "state-cached")
+    Process.sleep(10)
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+      ]
+    )
+
+    assert :ok = Adapter.update_issue_state("issue-1", "Cached")
+
+    assert_receive {:graphql_called, cached_update_query, %{issueId: "issue-1", stateId: "state-cached"}}
+
+    assert cached_update_query =~ "issueUpdate"
 
     Process.put(
       {FakeLinearClient, :graphql_results},
@@ -845,5 +862,18 @@ defmodule SymphonyElixir.ExtensionsTest do
         {:error, {:already_started, _pid}} -> :ok
       end
     end
+  end
+
+  defp restart_metadata_cache! do
+    if Process.whereis(MetadataCache) do
+      assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, MetadataCache)
+    end
+
+    restart_result = Supervisor.restart_child(SymphonyElixir.Supervisor, MetadataCache)
+
+    assert match?({:ok, _pid}, restart_result) or
+             match?({:error, {:already_started, _pid}}, restart_result)
+
+    :ok
   end
 end

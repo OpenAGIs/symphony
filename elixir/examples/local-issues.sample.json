@@ -1,0 +1,24 @@
+{
+  "issues": [
+    {
+      "id": "local-1",
+      "identifier": "LOCAL-1",
+      "title": "Replace Linear with the local tracker backend",
+      "description": "Run Symphony against a local JSON issue store and keep multi-issue orchestration intact.",
+      "priority": 1,
+      "state": "Todo",
+      "labels": ["tracker", "local"],
+      "assigned_to_worker": true
+    },
+    {
+      "id": "local-2",
+      "identifier": "LOCAL-2",
+      "title": "Add regression coverage for local tracker state updates",
+      "description": "Verify local issue comments and state transitions persist back to disk.",
+      "priority": 2,
+      "state": "Todo",
+      "labels": ["test"],
+      "assigned_to_worker": true
+    }
+  ]
+}

@@ -165,6 +165,8 @@ defmodule SymphonyElixir.Codex.AppServer do
     if is_nil(executable) do
       {:error, :bash_not_found}
     else
+      # Use --noprofile --norc to minimize environment pollution if needed,
+      # but the main fix is ensuring the command doesn't inherit args from the parent symphony process.
       port =
         Port.open(
           {:spawn_executable, String.to_charlist(executable)},
@@ -172,7 +174,7 @@ defmodule SymphonyElixir.Codex.AppServer do
             :binary,
             :exit_status,
             :stderr_to_stdout,
-            args: [~c"-lc", String.to_charlist(Config.codex_command())],
+            args: [~c"-c", String.to_charlist(Config.codex_command())],
             cd: String.to_charlist(workspace),
             line: @port_line_bytes
           ]
@@ -284,6 +286,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
+        Logger.warning("[CODEX-IN] #{complete_line}")
         handle_incoming(port, on_message, complete_line, timeout_ms, tool_executor, auto_approve_requests)
 
       {^port, {:data, {:noeol, chunk}}} ->
@@ -827,6 +830,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
+        Logger.warning("[CODEX-IN-RESP] #{complete_line}")
         handle_response(port, request_id, complete_line, timeout_ms)
 
       {^port, {:data, {:noeol, chunk}}} ->
@@ -909,7 +913,10 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp maybe_set_usage(metadata, payload) when is_map(payload) do
-    usage = Map.get(payload, "usage") || Map.get(payload, :usage)
+    usage =
+      Map.get(payload, "usage") ||
+        Map.get(payload, :usage) ||
+        extract_usage_from_params(payload)
 
     if is_map(usage) do
       Map.put(metadata, :usage, usage)
@@ -919,6 +926,27 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp maybe_set_usage(metadata, _payload), do: metadata
+
+  defp extract_usage_from_params(payload) do
+    params = Map.get(payload, "params") || Map.get(payload, :params)
+
+    if is_map(params) do
+      Map.get(params, "usage") ||
+        Map.get(params, :usage) ||
+        extract_usage_from_msg(params)
+    end
+  end
+
+  defp extract_usage_from_msg(params) do
+    msg = Map.get(params, "msg") || Map.get(params, :msg)
+
+    if is_map(msg) do
+      Map.get(msg, "usage") ||
+        Map.get(msg, :usage) ||
+        Map.get(msg, "info") ||
+        Map.get(msg, :info)
+    end
+  end
 
   defp default_on_message(_message), do: :ok
 
@@ -945,6 +973,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp send_message(port, message) do
     line = Jason.encode!(message) <> "\n"
+    Logger.warning("[CODEX-OUT] #{line}")
     Port.command(port, line)
   end
 

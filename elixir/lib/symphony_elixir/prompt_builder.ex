@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.PromptBuilder do
   @moduledoc """
-  Builds agent prompts from Linear issue data.
+  Builds agent prompts from normalized tracked issue data.
   """
 
   alias SymphonyElixir.{Config, Workflow}
