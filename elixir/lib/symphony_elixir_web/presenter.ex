@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard, Tracker.Local}
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -11,16 +11,25 @@ defmodule SymphonyElixirWeb.Presenter do
 
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
+        running_count = length(snapshot.running)
+        capacity_limit = Config.max_concurrent_agents()
+
         %{
           generated_at: generated_at,
           counts: %{
-            running: length(snapshot.running),
+            running: running_count,
             retrying: length(snapshot.retrying)
+          },
+          capacity: %{
+            running: running_count,
+            limit: capacity_limit,
+            available: max(capacity_limit - running_count, 0)
           },
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           codex_totals: snapshot.codex_totals,
-          rate_limits: snapshot.rate_limits
+          rate_limits: snapshot.rate_limits,
+          polling: polling_payload(snapshot)
         }
 
       :timeout ->
@@ -37,11 +46,12 @@ defmodule SymphonyElixirWeb.Presenter do
       %{} = snapshot ->
         running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
         retry = Enum.find(snapshot.retrying, &(&1.identifier == issue_identifier))
+        tracked = tracked_issue(issue_identifier)
 
-        if is_nil(running) and is_nil(retry) do
+        if is_nil(running) and is_nil(retry) and is_nil(tracked) do
           {:error, :issue_not_found}
         else
-          {:ok, issue_payload_body(issue_identifier, running, retry)}
+          {:ok, issue_payload_body(issue_identifier, running, retry, tracked)}
         end
 
       _ ->
@@ -60,11 +70,11 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
-  defp issue_payload_body(issue_identifier, running, retry) do
+  defp issue_payload_body(issue_identifier, running, retry, tracked) do
     %{
       issue_identifier: issue_identifier,
-      issue_id: issue_id_from_entries(running, retry),
-      status: issue_status(running, retry),
+      issue_id: issue_id_from_entries(running, retry, tracked),
+      status: issue_status(running, retry, tracked),
       workspace: %{
         path: Path.join(Config.workspace_root(), issue_identifier)
       },
@@ -79,20 +89,22 @@ defmodule SymphonyElixirWeb.Presenter do
       },
       recent_events: (running && recent_events_payload(running)) || [],
       last_error: retry && retry.error,
-      tracked: %{}
+      tracked: tracked_issue_payload(tracked)
     }
   end
 
-  defp issue_id_from_entries(running, retry),
-    do: (running && running.issue_id) || (retry && retry.issue_id)
+  defp issue_id_from_entries(running, retry, tracked),
+    do: (running && running.issue_id) || (retry && retry.issue_id) || (tracked && tracked.id)
 
   defp restart_count(retry), do: max(retry_attempt(retry) - 1, 0)
   defp retry_attempt(nil), do: 0
   defp retry_attempt(retry), do: retry.attempt || 0
 
-  defp issue_status(_running, nil), do: "running"
-  defp issue_status(nil, _retry), do: "retrying"
-  defp issue_status(_running, _retry), do: "running"
+  defp issue_status(_running, nil, nil), do: "running"
+  defp issue_status(nil, _retry, nil), do: "retrying"
+  defp issue_status(_running, _retry, nil), do: "running"
+  defp issue_status(nil, nil, tracked), do: tracked.state || "tracked"
+  defp issue_status(_running, _retry, _tracked), do: "running"
 
   defp running_entry_payload(entry) do
     %{
@@ -161,6 +173,45 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
+
+  defp polling_payload(snapshot) do
+    polling = Map.get(snapshot, :polling, %{})
+
+    %{
+      checking?: Map.get(polling, :checking?, false),
+      next_poll_in_ms: Map.get(polling, :next_poll_in_ms),
+      poll_interval_ms: Map.get(polling, :poll_interval_ms)
+    }
+  end
+
+  defp tracked_issue(issue_identifier) do
+    if Config.tracker_kind() == "local" do
+      case Local.list_issues() do
+        {:ok, issues} -> Enum.find(issues, &(&1.identifier == issue_identifier))
+        _ -> nil
+      end
+    end
+  end
+
+  defp tracked_issue_payload(nil), do: %{}
+
+  defp tracked_issue_payload(issue) do
+    %{
+      id: issue.id,
+      identifier: issue.identifier,
+      title: issue.title,
+      description: issue.description,
+      state: issue.state,
+      priority: issue.priority,
+      labels: issue.labels || [],
+      branch_name: issue.branch_name,
+      url: issue.url,
+      blocked_by: issue.blocked_by || [],
+      assigned_to_worker: Map.get(issue, :assigned_to_worker, true),
+      created_at: iso8601(issue.created_at),
+      updated_at: iso8601(issue.updated_at)
+    }
+  end
 
   defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do
     DateTime.utc_now()

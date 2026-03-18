@@ -214,7 +214,7 @@ defmodule SymphonyElixir.LocalTrackerTest do
                url: "https://example.test/issues/1"
              )
 
-    assert {:ok, %Issue{labels: [], blocked_by: []}} =
+    assert {:ok, %Issue{labels: ["5"], blocked_by: []}} =
              Local.create_issue(%{
                "title" => "Scalar labels",
                "labels" => 5,
