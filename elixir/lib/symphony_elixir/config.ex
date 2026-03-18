@@ -10,7 +10,7 @@ defmodule SymphonyElixir.Config do
   @default_terminal_states ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
   @default_linear_endpoint "https://api.linear.app/graphql"
   @default_prompt_template """
-  You are working on a Linear issue.
+  You are working on a tracked issue.
 
   Identifier: {{ issue.identifier }}
   Title: {{ issue.title }}
@@ -53,6 +53,7 @@ defmodule SymphonyElixir.Config do
                                  endpoint: [type: :string, default: @default_linear_endpoint],
                                  api_key: [type: {:or, [:string, nil]}, default: nil],
                                  project_slug: [type: {:or, [:string, nil]}, default: nil],
+                                 path: [type: {:or, [:string, nil]}, default: nil],
                                  assignee: [type: {:or, [:string, nil]}, default: nil],
                                  active_states: [
                                    type: {:list, :string},
@@ -75,7 +76,10 @@ defmodule SymphonyElixir.Config do
                                type: :map,
                                default: %{},
                                keys: [
-                                 root: [type: {:or, [:string, nil]}, default: @default_workspace_root]
+                                 root: [
+                                   type: {:or, [:string, nil]},
+                                   default: @default_workspace_root
+                                 ]
                                ]
                              ],
                              agent: [
@@ -127,7 +131,10 @@ defmodule SymphonyElixir.Config do
                                  before_run: [type: {:or, [:string, nil]}, default: nil],
                                  after_run: [type: {:or, [:string, nil]}, default: nil],
                                  before_remove: [type: {:or, [:string, nil]}, default: nil],
-                                 timeout_ms: [type: :pos_integer, default: @default_hook_timeout_ms]
+                                 timeout_ms: [
+                                   type: :pos_integer,
+                                   default: @default_hook_timeout_ms
+                                 ]
                                ]
                              ],
                              observability: [
@@ -199,6 +206,13 @@ defmodule SymphonyElixir.Config do
   @spec linear_project_slug() :: String.t() | nil
   def linear_project_slug do
     get_in(validated_workflow_options(), [:tracker, :project_slug])
+  end
+
+  @spec local_tracker_path() :: String.t() | nil
+  def local_tracker_path do
+    validated_workflow_options()
+    |> get_in([:tracker, :path])
+    |> resolve_path_value(nil)
   end
 
   @spec linear_assignee() :: String.t() | nil
@@ -367,12 +381,14 @@ defmodule SymphonyElixir.Config do
          :ok <- require_tracker_kind(),
          :ok <- require_linear_token(),
          :ok <- require_linear_project(),
+         :ok <- require_local_tracker_path(),
          :ok <- require_valid_codex_runtime_settings() do
       require_codex_command()
     end
   end
 
-  @spec codex_runtime_settings(Path.t() | nil) :: {:ok, codex_runtime_settings()} | {:error, term()}
+  @spec codex_runtime_settings(Path.t() | nil) ::
+          {:ok, codex_runtime_settings()} | {:error, term()}
   def codex_runtime_settings(workspace \\ nil) do
     with {:ok, approval_policy} <- resolve_codex_approval_policy(),
          {:ok, thread_sandbox} <- resolve_codex_thread_sandbox(),
@@ -389,6 +405,7 @@ defmodule SymphonyElixir.Config do
   defp require_tracker_kind do
     case tracker_kind() do
       "linear" -> :ok
+      "local" -> :ok
       "memory" -> :ok
       nil -> {:error, :missing_tracker_kind}
       other -> {:error, {:unsupported_tracker_kind, other}}
@@ -416,6 +433,20 @@ defmodule SymphonyElixir.Config do
           :ok
         else
           {:error, :missing_linear_project_slug}
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp require_local_tracker_path do
+    case tracker_kind() do
+      "local" ->
+        if is_binary(local_tracker_path()) and String.trim(local_tracker_path()) != "" do
+          :ok
+        else
+          {:error, :missing_local_tracker_path}
         end
 
       _ ->
@@ -459,10 +490,15 @@ defmodule SymphonyElixir.Config do
 
   defp extract_tracker_options(section) do
     %{}
-    |> put_if_present(:kind, normalize_tracker_kind(scalar_string_value(Map.get(section, "kind"))))
+    |> put_if_present(
+      :kind,
+      normalize_tracker_kind(scalar_string_value(Map.get(section, "kind")))
+    )
     |> put_if_present(:endpoint, scalar_string_value(Map.get(section, "endpoint")))
     |> put_if_present(:api_key, binary_value(Map.get(section, "api_key"), allow_empty: true))
     |> put_if_present(:project_slug, scalar_string_value(Map.get(section, "project_slug")))
+    |> put_if_present(:path, binary_value(Map.get(section, "path")))
+    |> put_if_present(:assignee, binary_value(Map.get(section, "assignee"), allow_empty: true))
     |> put_if_present(:active_states, csv_value(Map.get(section, "active_states")))
     |> put_if_present(:terminal_states, csv_value(Map.get(section, "terminal_states")))
   end
@@ -479,9 +515,15 @@ defmodule SymphonyElixir.Config do
 
   defp extract_agent_options(section) do
     %{}
-    |> put_if_present(:max_concurrent_agents, integer_value(Map.get(section, "max_concurrent_agents")))
+    |> put_if_present(
+      :max_concurrent_agents,
+      integer_value(Map.get(section, "max_concurrent_agents"))
+    )
     |> put_if_present(:max_turns, positive_integer_value(Map.get(section, "max_turns")))
-    |> put_if_present(:max_retry_backoff_ms, positive_integer_value(Map.get(section, "max_retry_backoff_ms")))
+    |> put_if_present(
+      :max_retry_backoff_ms,
+      positive_integer_value(Map.get(section, "max_retry_backoff_ms"))
+    )
     |> put_if_present(
       :max_concurrent_agents_by_state,
       state_limits_value(Map.get(section, "max_concurrent_agents_by_state"))
