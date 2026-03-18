@@ -4,7 +4,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SymphonyElixir.Linear.Adapter
+  alias SymphonyElixir.Linear.{Adapter, MetadataCache}
   alias SymphonyElixir.Tracker.Memory
 
   @endpoint SymphonyElixirWeb.Endpoint
@@ -201,12 +201,16 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert :ok = Memory.create_comment("issue-1", "quiet")
     assert :ok = Memory.update_issue_state("issue-1", "Quiet")
 
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "local", tracker_path: "./issues.json")
+    assert SymphonyElixir.Tracker.adapter() == SymphonyElixir.Tracker.Local
+
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
   end
 
   test "linear adapter delegates reads and validates mutation responses" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    restart_metadata_cache!()
 
     assert {:ok, [:candidate]} = Adapter.fetch_candidate_issues()
     assert_receive :fetch_candidate_issues_called
@@ -243,6 +247,22 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     Process.put({FakeLinearClient, :graphql_result}, :unexpected)
     assert {:error, :comment_create_failed} = Adapter.create_comment("issue-1", "odd")
+
+    :ok = MetadataCache.put_state_id("Cached", "state-cached")
+    Process.sleep(10)
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+      ]
+    )
+
+    assert :ok = Adapter.update_issue_state("issue-1", "Cached")
+
+    assert_receive {:graphql_called, cached_update_query, %{issueId: "issue-1", stateId: "state-cached"}}
+
+    assert cached_update_query =~ "issueUpdate"
 
     Process.put(
       {FakeLinearClient, :graphql_results},
@@ -587,6 +607,95 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
+  test "dashboard liveview manages local issues when the workflow uses the local tracker" do
+    tracker_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "issues.json")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: tracker_path,
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    File.write!(
+      tracker_path,
+      Jason.encode!(
+        %{
+          "issues" => [
+            %{
+              "id" => "local-1",
+              "identifier" => "LOCAL-1",
+              "title" => "Move the workflow UI local",
+              "description" => "Expose issue controls in the dashboard.",
+              "priority" => 1,
+              "state" => "Todo",
+              "labels" => ["dashboard", "local"]
+            }
+          ]
+        },
+        pretty: true
+      )
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :LocalDashboardOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        refresh: %{
+          queued: true,
+          coalesced: false,
+          requested_at: DateTime.utc_now(),
+          operations: ["poll"]
+        }
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, html} = live(build_conn(), "/")
+    assert html =~ "Local issues"
+    assert html =~ "LOCAL-1"
+    assert html =~ "Move the workflow UI local"
+    assert html =~ tracker_path
+
+    created_html =
+      view
+      |> form("#local-issue-create-form",
+        issue: %{
+          title: "Add a local issue CLI entry",
+          state: "In Progress",
+          priority: "2",
+          labels: "cli,local",
+          description: "Create an operator entrypoint without Linear."
+        }
+      )
+      |> render_submit()
+
+    assert created_html =~ "Created LOCAL-2"
+    assert created_html =~ "Add a local issue CLI entry"
+
+    updated_html =
+      view
+      |> form("#local-issue-state-local-1", %{"issue_ref" => "local-1", "state" => "Done"})
+      |> render_submit()
+
+    assert updated_html =~ "Updated local-1 to Done"
+    assert updated_html =~ "Done"
+
+    assert_eventually(fn ->
+      {:ok, payload} = File.read(tracker_path)
+      issues = Jason.decode!(payload)["issues"]
+
+      Enum.any?(issues, fn issue ->
+        issue["identifier"] == "LOCAL-1" and issue["state"] == "Done"
+      end) and
+        Enum.any?(issues, fn issue ->
+          issue["identifier"] == "LOCAL-2" and issue["state"] == "In Progress"
+        end)
+    end)
+  end
+
   test "dashboard liveview renders an unavailable state without crashing" do
     start_test_endpoint(
       orchestrator: Module.concat(__MODULE__, :MissingDashboardOrchestrator),
@@ -737,5 +846,18 @@ defmodule SymphonyElixir.ExtensionsTest do
         {:error, {:already_started, _pid}} -> :ok
       end
     end
+  end
+
+  defp restart_metadata_cache! do
+    if Process.whereis(MetadataCache) do
+      assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, MetadataCache)
+    end
+
+    restart_result = Supervisor.restart_child(SymphonyElixir.Supervisor, MetadataCache)
+
+    assert match?({:ok, _pid}, restart_result) or
+             match?({:error, {:already_started, _pid}}, restart_result)
+
+    :ok
   end
 end

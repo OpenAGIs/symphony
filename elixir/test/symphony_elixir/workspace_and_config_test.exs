@@ -550,6 +550,51 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace hooks receive workflow and issue environment" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-hook-env-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      before_remove_marker = Path.join(test_root, "before_remove-env.log")
+      workflow_path = Path.expand(Workflow.workflow_file_path())
+
+      File.mkdir_p!(workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: ~S(printf '%s\n%s\n%s\n%s\n%s\n' "$SYMPHONY_WORKFLOW_FILE" "$SYMPHONY_WORKFLOW_DIR" "$SYMPHONY_ISSUE_IDENTIFIER" "$SYMPHONY_ISSUE_ID" "$SYMPHONY_WORKSPACE" > hook-env.txt),
+        hook_before_remove: "printf '%s\\n%s\\n%s\\n%s\\n' \"$SYMPHONY_ISSUE_IDENTIFIER\" \"$SYMPHONY_WORKFLOW_FILE\" \"$SYMPHONY_WORKFLOW_DIR\" \"$SYMPHONY_WORKSPACE\" > \"#{before_remove_marker}\""
+      )
+
+      assert {:ok, workspace} = Workspace.create_for_issue(%{id: "issue-123", identifier: "MT-ENV"})
+
+      assert File.read!(Path.join(workspace, "hook-env.txt"))
+             |> String.split("\n", trim: true) == [
+               workflow_path,
+               Path.dirname(workflow_path),
+               "MT-ENV",
+               "issue-123",
+               workspace
+             ]
+
+      assert :ok = Workspace.remove_issue_workspaces("MT-ENV")
+
+      assert File.read!(before_remove_marker)
+             |> String.split("\n", trim: true) == [
+               "MT-ENV",
+               workflow_path,
+               Path.dirname(workflow_path),
+               workspace
+             ]
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace remove continues when before_remove hook fails" do
     test_root =
       Path.join(

@@ -5,6 +5,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.{Config, Tracker.Local}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
 
@@ -13,6 +14,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
     socket =
       socket
       |> assign(:payload, load_payload())
+      |> assign(:local_tracker, load_local_tracker())
+      |> assign(:local_issue_states, local_issue_states())
+      |> assign(:local_tracker_feedback, nil)
       |> assign(:now, DateTime.utc_now())
 
     if connected?(socket) do
@@ -34,7 +38,61 @@ defmodule SymphonyElixirWeb.DashboardLive do
     {:noreply,
      socket
      |> assign(:payload, load_payload())
+     |> assign(:local_tracker, load_local_tracker())
      |> assign(:now, DateTime.utc_now())}
+  end
+
+  @impl true
+  def handle_event("create_local_issue", %{"issue" => params}, socket) do
+    case Local.create_issue(local_issue_attrs(params)) do
+      {:ok, issue} ->
+        ObservabilityPubSub.broadcast_update()
+
+        {:noreply,
+         socket
+         |> assign(:local_tracker, load_local_tracker())
+         |> assign(:local_tracker_feedback, %{
+           kind: :info,
+           message: "Created #{issue.identifier}"
+         })}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:local_tracker, load_local_tracker())
+         |> assign(:local_tracker_feedback, %{
+           kind: :error,
+           message: local_tracker_error_message("Failed to create local issue", reason)
+         })}
+    end
+  end
+
+  def handle_event(
+        "update_local_issue_state",
+        %{"issue_ref" => issue_ref, "state" => state},
+        socket
+      ) do
+    case Local.update_issue_state(issue_ref, state) do
+      :ok ->
+        ObservabilityPubSub.broadcast_update()
+
+        {:noreply,
+         socket
+         |> assign(:local_tracker, load_local_tracker())
+         |> assign(:local_tracker_feedback, %{
+           kind: :info,
+           message: "Updated #{issue_ref} to #{state}"
+         })}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:local_tracker, load_local_tracker())
+         |> assign(:local_tracker_feedback, %{
+           kind: :error,
+           message: local_tracker_error_message("Failed to update local issue state", reason)
+         })}
+    end
   end
 
   @impl true
@@ -244,6 +302,147 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </div>
           <% end %>
         </section>
+
+        <section :if={@local_tracker.enabled?} class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Local issues</h2>
+              <p class="section-copy">
+                Create and move local tracker issues without leaving the dashboard.
+              </p>
+            </div>
+
+            <div class="tracker-meta">
+              <span class="state-badge state-badge-active">local</span>
+              <span class="mono tracker-path"><%= @local_tracker.path || "n/a" %></span>
+            </div>
+          </div>
+
+          <%= if @local_tracker_feedback do %>
+            <p class={tracker_feedback_class(@local_tracker_feedback.kind)}>
+              <%= @local_tracker_feedback.message %>
+            </p>
+          <% end %>
+
+          <%= if @local_tracker.error do %>
+            <p class="tracker-feedback tracker-feedback-error">
+              <%= @local_tracker.error %>
+            </p>
+          <% end %>
+
+          <div class="tracker-grid">
+            <div>
+              <%= if @local_tracker.issues == [] do %>
+                <p class="empty-state">No local issues yet. Create one to start a new run.</p>
+              <% else %>
+                <div class="table-wrap">
+                  <table class="data-table" style="min-width: 760px;">
+                    <thead>
+                      <tr>
+                        <th>Issue</th>
+                        <th>State</th>
+                        <th>Priority</th>
+                        <th>Labels</th>
+                        <th>Updated</th>
+                        <th>Move</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr :for={issue <- @local_tracker.issues}>
+                        <td>
+                          <div class="issue-stack">
+                            <span class="issue-id"><%= issue.identifier %></span>
+                            <span><%= issue.title %></span>
+                            <span :if={issue.description} class="muted"><%= issue.description %></span>
+                          </div>
+                        </td>
+                        <td>
+                          <span class={state_badge_class(issue.state)}>
+                            <%= issue.state %>
+                          </span>
+                        </td>
+                        <td class="numeric"><%= local_issue_priority(issue.priority) %></td>
+                        <td><%= local_issue_labels(issue.labels) %></td>
+                        <td class="mono"><%= issue.updated_at || "n/a" %></td>
+                        <td>
+                          <form
+                            id={"local-issue-state-#{issue.id}"}
+                            class="issue-state-form"
+                            phx-submit="update_local_issue_state"
+                          >
+                            <input type="hidden" name="issue_ref" value={issue.id} />
+                            <select name="state">
+                              <option
+                                :for={state <- @local_issue_states}
+                                selected={state == issue.state}
+                                value={state}
+                              >
+                                <%= state %>
+                              </option>
+                            </select>
+                            <button type="submit" class="secondary">Set</button>
+                          </form>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              <% end %>
+            </div>
+
+            <form id="local-issue-create-form" class="tracker-create-form" phx-submit="create_local_issue">
+              <div class="field-stack">
+                <label for="local-issue-title">Title</label>
+                <input id="local-issue-title" type="text" name="issue[title]" required />
+              </div>
+
+              <div class="field-row">
+                <div class="field-stack">
+                  <label for="local-issue-state">State</label>
+                  <select id="local-issue-state" name="issue[state]">
+                    <option :for={state <- @local_issue_states} value={state}>
+                      <%= state %>
+                    </option>
+                  </select>
+                </div>
+
+                <div class="field-stack">
+                  <label for="local-issue-priority">Priority</label>
+                  <input
+                    id="local-issue-priority"
+                    type="number"
+                    min="0"
+                    step="1"
+                    name="issue[priority]"
+                    placeholder="1"
+                  />
+                </div>
+              </div>
+
+              <div class="field-stack">
+                <label for="local-issue-labels">Labels</label>
+                <input
+                  id="local-issue-labels"
+                  type="text"
+                  name="issue[labels]"
+                  placeholder="go, migration, local"
+                />
+              </div>
+
+              <div class="field-stack">
+                <label for="local-issue-description">Description</label>
+                <textarea
+                  id="local-issue-description"
+                  name="issue[description]"
+                  rows="5"
+                  placeholder="Describe the scope, acceptance checks, and any blockers."
+                ></textarea>
+              </div>
+
+              <button type="submit">Create issue</button>
+            </form>
+          </div>
+        </section>
       <% end %>
     </section>
     """
@@ -324,6 +523,100 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
   end
+
+  defp load_local_tracker do
+    case Config.tracker_kind() do
+      "local" ->
+        case Local.list_issues() do
+          {:ok, issues} ->
+            %{
+              enabled?: true,
+              path: Config.local_tracker_path(),
+              issues: Enum.map(issues, &local_issue_payload/1),
+              error: nil
+            }
+
+          {:error, reason} ->
+            %{
+              enabled?: true,
+              path: Config.local_tracker_path(),
+              issues: [],
+              error: local_tracker_error_message("Failed to load local issue store", reason)
+            }
+        end
+
+      _kind ->
+        %{enabled?: false, path: nil, issues: [], error: nil}
+    end
+  end
+
+  defp local_issue_payload(issue) do
+    %{
+      id: issue.id || issue.identifier,
+      identifier: issue.identifier || issue.id || "LOCAL",
+      title: issue.title || "Untitled issue",
+      description: issue.description,
+      state: issue.state || "Unknown",
+      priority: issue.priority,
+      labels: issue.labels || [],
+      updated_at: local_issue_timestamp(issue.updated_at)
+    }
+  end
+
+  defp local_issue_attrs(params) when is_map(params) do
+    params
+    |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
+    |> Enum.map(fn
+      {"labels", value} -> {"labels", String.split(value, ",", trim: true)}
+      {"priority", value} -> {"priority", parse_optional_integer(value)}
+      entry -> entry
+    end)
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp parse_optional_integer(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {integer, ""} -> integer
+      _ -> nil
+    end
+  end
+
+  defp parse_optional_integer(value) when is_integer(value), do: value
+  defp parse_optional_integer(_value), do: nil
+
+  defp local_issue_states do
+    (Config.linear_active_states() ++ Config.linear_terminal_states())
+    |> Enum.map(&to_string/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> case do
+      [] -> ["Todo", "In Progress", "Done"]
+      states -> states
+    end
+  end
+
+  defp local_issue_timestamp(nil), do: nil
+
+  defp local_issue_timestamp(%DateTime{} = datetime) do
+    datetime
+    |> DateTime.truncate(:second)
+    |> DateTime.to_iso8601()
+  end
+
+  defp local_issue_timestamp(value), do: to_string(value)
+
+  defp local_issue_priority(nil), do: "n/a"
+  defp local_issue_priority(priority), do: Integer.to_string(priority)
+
+  defp local_issue_labels([]), do: "n/a"
+  defp local_issue_labels(labels), do: Enum.join(labels, ", ")
+
+  defp tracker_feedback_class(:error), do: "tracker-feedback tracker-feedback-error"
+  defp tracker_feedback_class(_kind), do: "tracker-feedback tracker-feedback-info"
+
+  defp local_tracker_error_message(prefix, :issue_not_found), do: "#{prefix}: issue not found"
+  defp local_tracker_error_message(prefix, reason), do: "#{prefix}: #{inspect(reason)}"
 
   defp pretty_value(nil), do: "n/a"
   defp pretty_value(value), do: inspect(value, pretty: true, limit: :infinity)

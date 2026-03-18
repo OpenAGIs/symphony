@@ -1,0 +1,54 @@
+{
+  "issues": [
+    {
+      "id": "local-1",
+      "identifier": "LOCAL-1",
+      "title": "Expose the local dashboard through a browser-friendly entrypoint",
+      "description": "Default the local workflow to a browser-accessible dashboard port and add a CLI entry that prints the panel URL for operators.",
+      "priority": 1,
+      "state": "Done",
+      "labels": ["dashboard", "local", "workflow"],
+      "assigned_to_worker": true
+    },
+    {
+      "id": "local-2",
+      "identifier": "LOCAL-2",
+      "title": "Remove remaining Linear wording from fallback prompts and continuation text",
+      "description": "Neutralize prompt fallback copy in config, prompt builder, and agent runner so local-tracker runs never regress to Linear-specific instructions.",
+      "priority": 1,
+      "state": "Done",
+      "labels": ["prompt", "local", "cleanup"],
+      "assigned_to_worker": true
+    },
+    {
+      "id": "local-3",
+      "identifier": "LOCAL-3",
+      "title": "Refactor operator-facing dashboard and cleanup copy away from Linear",
+      "description": "Update status dashboard, orchestrator logs, and workspace cleanup comments so the local tracker remains the only operator mental model.",
+      "priority": 1,
+      "state": "Done",
+      "labels": ["observability", "cleanup", "local"],
+      "assigned_to_worker": true
+    },
+    {
+      "id": "local-4",
+      "identifier": "LOCAL-4",
+      "title": "Replace the linear_graphql dynamic tool with a local tracker-safe tool surface",
+      "description": "Stop advertising Linear-only dynamic tools during local runs and replace them with local issue tracker commands or no-op-safe alternatives.",
+      "priority": 1,
+      "state": "Todo",
+      "labels": ["tools", "local", "runtime"],
+      "assigned_to_worker": true
+    },
+    {
+      "id": "local-5",
+      "identifier": "LOCAL-5",
+      "title": "Rename the core issue model away from Linear.Issue",
+      "description": "Move core issue docs and types toward tracker-neutral names so the local workflow is the only mainline abstraction.",
+      "priority": 2,
+      "state": "Todo",
+      "labels": ["types", "refactor", "local"],
+      "assigned_to_worker": true
+    }
+  ]
+}
