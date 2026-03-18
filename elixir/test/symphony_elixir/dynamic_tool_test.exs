@@ -3,7 +3,14 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   alias SymphonyElixir.Codex.DynamicTool
 
-  test "tool_specs advertises the linear_graphql input contract" do
+  setup do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
+    :ok
+  end
+
+  test "tool_specs advertises the linear_graphql input contract for the linear tracker" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
+
     assert [
              %{
                "description" => description,
@@ -23,6 +30,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
+
     response = DynamicTool.execute("not_a_real_tool", %{})
 
     assert response["success"] == false
@@ -38,6 +47,166 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              "error" => %{
                "message" => ~s(Unsupported dynamic tool: "not_a_real_tool".),
                "supportedTools" => ["linear_graphql"]
+             }
+           }
+  end
+
+  test "tool_specs advertises local issue tools for the local tracker" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: "./issues.json",
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    assert Enum.map(DynamicTool.tool_specs(), & &1["name"]) == [
+             "local_issue_list",
+             "local_issue_create",
+             "local_issue_state",
+             "local_issue_comment"
+           ]
+  end
+
+  test "local issue tools list, create, comment on, and move issues" do
+    tracker_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "issues.json")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: tracker_path,
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    File.write!(
+      tracker_path,
+      Jason.encode!(
+        %{
+          "issues" => [
+            %{
+              "id" => "local-1",
+              "identifier" => "LOCAL-1",
+              "title" => "Existing local issue",
+              "state" => "Todo",
+              "labels" => ["ops"]
+            }
+          ]
+        },
+        pretty: true
+      )
+    )
+
+    listed = DynamicTool.execute("local_issue_list", %{"states" => ["Todo"]})
+
+    assert listed["success"] == true
+
+    assert decode_text_payload(listed) == %{
+             "issues" => [
+               %{
+                 "assignedToWorker" => true,
+                 "assigneeId" => nil,
+                 "blockedBy" => [],
+                 "branchName" => nil,
+                 "createdAt" => nil,
+                 "description" => nil,
+                 "id" => "local-1",
+                 "identifier" => "LOCAL-1",
+                 "labels" => ["ops"],
+                 "priority" => nil,
+                 "state" => "Todo",
+                 "title" => "Existing local issue",
+                 "updatedAt" => nil,
+                 "url" => nil
+               }
+             ]
+           }
+
+    created =
+      DynamicTool.execute(
+        "local_issue_create",
+        %{
+          "title" => "Create a follow-up slice",
+          "description" => "Need a second issue for parallel work.",
+          "priority" => 2,
+          "labels" => ["parallel", "local"],
+          "state" => "In Progress",
+          "identifier" => "LOCAL-2"
+        }
+      )
+
+    assert created["success"] == true
+    created_payload = decode_text_payload(created)
+    assert created_payload["message"] == "Created LOCAL-2"
+    assert created_payload["issue"]["identifier"] == "LOCAL-2"
+    assert created_payload["issue"]["state"] == "In Progress"
+
+    commented = DynamicTool.execute("local_issue_comment", %{"issueRef" => "LOCAL-2", "body" => "Work started"})
+
+    assert commented["success"] == true
+    assert decode_text_payload(commented)["message"] == "Appended comment to LOCAL-2"
+
+    moved = DynamicTool.execute("local_issue_state", %{"issueRef" => "LOCAL-2", "state" => "Done"})
+
+    assert moved["success"] == true
+    assert decode_text_payload(moved)["message"] == "Updated LOCAL-2 -> Done"
+
+    decoded_tracker = tracker_path |> File.read!() |> Jason.decode!()
+
+    assert get_in(decoded_tracker, ["issues", Access.at(1), "identifier"]) == "LOCAL-2"
+    assert get_in(decoded_tracker, ["issues", Access.at(1), "state"]) == "Done"
+    assert get_in(decoded_tracker, ["issues", Access.at(1), "comments", Access.at(0), "body"]) == "Work started"
+  end
+
+  test "local issue tools validate inputs and report supported tools" do
+    tracker_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "issues.json")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: tracker_path,
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    File.write!(tracker_path, Jason.encode!(%{"issues" => []}, pretty: true))
+
+    invalid_create = DynamicTool.execute("local_issue_create", %{})
+    assert invalid_create["success"] == false
+
+    assert decode_text_payload(invalid_create) == %{
+             "error" => %{
+               "message" => "`local_issue_create` requires a non-empty `title` string."
+             }
+           }
+
+    invalid_list = DynamicTool.execute("local_issue_list", %{"states" => "Todo"})
+    assert invalid_list["success"] == false
+
+    assert decode_text_payload(invalid_list) == %{
+             "error" => %{
+               "message" => "`local_issue_list.states` must be an array of strings when provided."
+             }
+           }
+
+    missing_ref = DynamicTool.execute("local_issue_state", %{"state" => "Done"})
+    assert missing_ref["success"] == false
+
+    assert decode_text_payload(missing_ref) == %{
+             "error" => %{
+               "message" => "A non-empty `issueRef` is required."
+             }
+           }
+
+    unsupported = DynamicTool.execute("linear_graphql", %{})
+    assert unsupported["success"] == false
+
+    assert decode_text_payload(unsupported) == %{
+             "error" => %{
+               "message" => ~s(Unsupported dynamic tool: "linear_graphql".),
+               "supportedTools" => [
+                 "local_issue_list",
+                 "local_issue_create",
+                 "local_issue_state",
+                 "local_issue_comment"
+               ]
              }
            }
   end
@@ -374,5 +543,15 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                "text" => ":ok"
              }
            ] = response["contentItems"]
+  end
+
+  defp decode_text_payload(response) do
+    assert [
+             %{
+               "text" => text
+             }
+           ] = response["contentItems"]
+
+    Jason.decode!(text)
   end
 end

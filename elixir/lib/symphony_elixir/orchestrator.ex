@@ -29,6 +29,8 @@ defmodule SymphonyElixir.Orchestrator do
     defstruct [
       :poll_interval_ms,
       :max_concurrent_agents,
+      :lease_owner,
+      :lease_ttl_ms,
       :next_poll_due_at_ms,
       :poll_check_in_progress,
       running: %{},
@@ -47,12 +49,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @impl true
-  def init(_opts) do
+  def init(opts) do
     now_ms = System.monotonic_time(:millisecond)
 
     state = %State{
       poll_interval_ms: Config.poll_interval_ms(),
       max_concurrent_agents: Config.max_concurrent_agents(),
+      lease_owner: Keyword.get(opts, :lease_owner, default_lease_owner()),
+      lease_ttl_ms: Keyword.get(opts, :lease_ttl_ms, default_lease_ttl_ms()),
       next_poll_due_at_ms: now_ms,
       poll_check_in_progress: false,
       codex_totals: @empty_codex_totals,
@@ -172,6 +176,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp maybe_dispatch(%State{} = state) do
     state = reconcile_running_issues(state)
+    state = renew_owned_issue_claims(state)
 
     with :ok <- Config.validate!(),
          true <- available_slots(state) > 0,
@@ -360,12 +365,15 @@ defmodule SymphonyElixir.Orchestrator do
           Process.demonitor(ref, [:flush])
         end
 
-        %{
-          state
-          | running: Map.delete(state.running, issue_id),
-            claimed: MapSet.delete(state.claimed, issue_id),
-            retry_attempts: Map.delete(state.retry_attempts, issue_id)
-        }
+        state =
+          %{
+            state
+            | running: Map.delete(state.running, issue_id),
+              claimed: MapSet.delete(state.claimed, issue_id),
+              retry_attempts: Map.delete(state.retry_attempts, issue_id)
+          }
+
+        release_issue_claim(state, issue_id)
 
       _ ->
         release_issue_claim(state, issue_id)
@@ -586,7 +594,14 @@ defmodule SymphonyElixir.Orchestrator do
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt)
+        case claim_issue_for_dispatch(state, refreshed_issue) do
+          {:ok, claimed_state} ->
+            do_dispatch_issue(claimed_state, refreshed_issue, attempt)
+
+          {:skip, reason} ->
+            Logger.info("Skipping dispatch; unable to claim #{issue_context(refreshed_issue)}: #{inspect(reason)}")
+            state
+        end
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -639,7 +654,6 @@ defmodule SymphonyElixir.Orchestrator do
         %{
           state
           | running: running,
-            claimed: MapSet.put(state.claimed, issue.id),
             retry_attempts: Map.delete(state.retry_attempts, issue.id)
         }
 
@@ -823,7 +837,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp release_issue_claim(%State{} = state, issue_id) do
-    %{state | claimed: MapSet.delete(state.claimed, issue_id)}
+    case Tracker.release_issue_claim(issue_id, state.lease_owner) do
+      :ok ->
+        %{state | claimed: MapSet.delete(state.claimed, issue_id)}
+
+      {:error, reason} ->
+        Logger.warning("Failed to release issue claim issue_id=#{issue_id} owner=#{state.lease_owner}: #{inspect(reason)}")
+        %{state | claimed: MapSet.delete(state.claimed, issue_id)}
+    end
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
@@ -1111,6 +1132,50 @@ defmodule SymphonyElixir.Orchestrator do
       | poll_interval_ms: Config.poll_interval_ms(),
         max_concurrent_agents: Config.max_concurrent_agents()
     }
+  end
+
+  defp claim_issue_for_dispatch(%State{} = state, %Issue{id: issue_id})
+       when is_binary(issue_id) do
+    case Tracker.claim_issue(issue_id, state.lease_owner, ttl_ms: state.lease_ttl_ms) do
+      :ok ->
+        {:ok, %{state | claimed: MapSet.put(state.claimed, issue_id)}}
+
+      {:error, {:issue_claimed, _owner, _lease_expires_at} = reason} ->
+        {:skip, reason}
+
+      {:error, reason} ->
+        {:skip, reason}
+    end
+  end
+
+  defp claim_issue_for_dispatch(_state, _issue), do: {:skip, :missing_issue_id}
+
+  defp renew_owned_issue_claims(%State{} = state) do
+    Enum.reduce(state.claimed, state, fn issue_id, state_acc ->
+      case Tracker.claim_issue(issue_id, state_acc.lease_owner, ttl_ms: state_acc.lease_ttl_ms) do
+        :ok ->
+          state_acc
+
+        {:error, :issue_not_found} ->
+          %{state_acc | claimed: MapSet.delete(state_acc.claimed, issue_id)}
+
+        {:error, reason} ->
+          Logger.warning("Failed to renew issue claim issue_id=#{issue_id} owner=#{state_acc.lease_owner}: #{inspect(reason)}")
+
+          state_acc
+      end
+    end)
+  end
+
+  defp default_lease_ttl_ms do
+    max(Config.poll_interval_ms() * 3, 180_000)
+  end
+
+  defp default_lease_owner do
+    {:ok, hostname} = :inet.gethostname()
+    host = List.to_string(hostname)
+
+    "#{host}:#{System.pid()}:#{System.unique_integer([:positive])}"
   end
 
   defp retry_candidate_issue?(%Issue{} = issue, terminal_states) do

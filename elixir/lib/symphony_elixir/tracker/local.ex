@@ -14,7 +14,9 @@ defmodule SymphonyElixir.Tracker.Local do
 
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
-    fetch_issues_by_states(Config.linear_active_states())
+    with {:ok, issues} <- fetch_issues_by_states(Config.linear_active_states()) do
+      {:ok, Enum.reject(issues, &issue_claim_active?/1)}
+    end
   end
 
   @spec list_issues() :: {:ok, [Issue.t()]} | {:error, term()}
@@ -95,6 +97,23 @@ defmodule SymphonyElixir.Tracker.Local do
     end)
   end
 
+  @spec claim_issue(String.t(), String.t(), keyword()) :: :ok | {:error, term()}
+  def claim_issue(issue_id, owner, opts \\ [])
+      when is_binary(issue_id) and is_binary(owner) do
+    ttl_ms = claim_ttl_ms(opts)
+
+    with {:ok, path} <- tracker_path() do
+      claim_issue_in_tracker(path, issue_id, owner, ttl_ms)
+    end
+  end
+
+  @spec release_issue_claim(String.t(), String.t() | nil) :: :ok | {:error, term()}
+  def release_issue_claim(issue_id, owner \\ nil) when is_binary(issue_id) do
+    with {:ok, path} <- tracker_path() do
+      release_issue_claim_in_tracker(path, issue_id, owner)
+    end
+  end
+
   defp issue_entries do
     with {:ok, issue_maps} <- load_issue_maps() do
       {:ok,
@@ -129,6 +148,24 @@ defmodule SymphonyElixir.Tracker.Local do
     end)
   end
 
+  defp claim_issue_in_tracker(path, issue_id, owner, ttl_ms) do
+    :global.trans({__MODULE__, path}, fn ->
+      with {:ok, issue_maps} <- load_issue_maps(),
+           {:ok, updated_issue_maps} <- apply_issue_claim(issue_maps, issue_id, owner, ttl_ms) do
+        persist_issue_maps(path, updated_issue_maps)
+      end
+    end)
+  end
+
+  defp release_issue_claim_in_tracker(path, issue_id, owner) do
+    :global.trans({__MODULE__, path}, fn ->
+      with {:ok, issue_maps} <- load_issue_maps(),
+           {:ok, updated_issue_maps} <- apply_issue_release(issue_maps, issue_id, owner) do
+        persist_issue_maps(path, updated_issue_maps)
+      end
+    end)
+  end
+
   defp apply_issue_update(issue_maps, issue_id, updater) do
     {updated_issue_maps, found?} =
       Enum.map_reduce(issue_maps, false, fn
@@ -149,6 +186,60 @@ defmodule SymphonyElixir.Tracker.Local do
       {:error, :issue_not_found}
     end
   end
+
+  defp apply_issue_claim(issue_maps, issue_id, owner, ttl_ms) do
+    now = DateTime.utc_now()
+
+    map_issue_update(issue_maps, issue_id, fn issue ->
+      if issue_claim_available?(issue, owner, now) do
+        {:ok, put_issue_claim(issue, owner, now, ttl_ms)}
+      else
+        {:error, active_claim_reason(issue)}
+      end
+    end)
+  end
+
+  defp apply_issue_release(issue_maps, issue_id, owner) do
+    now = DateTime.utc_now()
+
+    map_issue_update(issue_maps, issue_id, fn issue ->
+      if release_allowed?(issue, owner, now) do
+        {:ok, clear_issue_claim(issue)}
+      else
+        {:error, active_claim_reason(issue)}
+      end
+    end)
+  end
+
+  defp map_issue_update(issue_maps, issue_id, updater) when is_function(updater, 1) do
+    {updated_issue_maps, result} =
+      Enum.map_reduce(issue_maps, :issue_not_found, fn
+        issue, :issue_not_found when is_map(issue) ->
+          update_mapped_issue(issue, issue_id, updater)
+
+        issue, status ->
+          {issue, status}
+      end)
+
+    case result do
+      :ok -> {:ok, updated_issue_maps}
+      :issue_not_found -> {:error, :issue_not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp update_mapped_issue(issue, issue_id, updater) when is_map(issue) and is_function(updater, 1) do
+    if issue_matches_ref?(issue, issue_id) do
+      issue
+      |> updater.()
+      |> mapped_issue_result(issue)
+    else
+      {issue, :issue_not_found}
+    end
+  end
+
+  defp mapped_issue_result({:ok, updated_issue}, _original_issue), do: {updated_issue, :ok}
+  defp mapped_issue_result({:error, reason}, original_issue), do: {original_issue, {:error, reason}}
 
   defp load_issue_maps do
     with {:ok, path} <- tracker_path() do
@@ -253,11 +344,14 @@ defmodule SymphonyElixir.Tracker.Local do
       branch_name: map_string(issue, "branch_name"),
       url: map_string(issue, "url"),
       assignee_id: map_string(issue, "assignee_id"),
+      claimed_by: map_string(issue, "claimed_by"),
       blocked_by: normalize_blocked_by(Map.get(issue, "blocked_by")),
       labels: normalize_string_list(Map.get(issue, "labels")),
       assigned_to_worker: Map.get(issue, "assigned_to_worker", true) != false,
       created_at: parse_datetime(Map.get(issue, "created_at")),
-      updated_at: parse_datetime(Map.get(issue, "updated_at"))
+      updated_at: parse_datetime(Map.get(issue, "updated_at")),
+      claimed_at: parse_datetime(Map.get(issue, "claimed_at")),
+      lease_expires_at: parse_datetime(Map.get(issue, "lease_expires_at"))
     }
   end
 
@@ -265,6 +359,59 @@ defmodule SymphonyElixir.Tracker.Local do
 
   defp normalize_blocked_by(value) when is_list(value), do: value
   defp normalize_blocked_by(_value), do: []
+
+  defp issue_claim_active?(%Issue{} = issue) do
+    lease_active?(issue.claimed_by, issue.lease_expires_at, DateTime.utc_now())
+  end
+
+  defp issue_claim_available?(issue, owner, now) when is_map(issue) and is_binary(owner) do
+    not lease_active?(map_string(issue, "claimed_by"), parse_datetime(Map.get(issue, "lease_expires_at")), now) or
+      map_string(issue, "claimed_by") == owner
+  end
+
+  defp put_issue_claim(issue, owner, now, ttl_ms) when is_map(issue) do
+    issue
+    |> Map.put("claimed_by", owner)
+    |> Map.put("claimed_at", timestamp_iso8601(now))
+    |> Map.put("lease_expires_at", timestamp_iso8601(claim_expires_at(now, ttl_ms)))
+    |> touch_updated_at()
+  end
+
+  defp clear_issue_claim(issue) when is_map(issue) do
+    issue
+    |> Map.put("claimed_by", nil)
+    |> Map.put("claimed_at", nil)
+    |> Map.put("lease_expires_at", nil)
+    |> touch_updated_at()
+  end
+
+  defp release_allowed?(issue, nil, _now) when is_map(issue), do: true
+
+  defp release_allowed?(issue, owner, now) when is_map(issue) and is_binary(owner) do
+    claim_owner = map_string(issue, "claimed_by")
+    claim_owner == owner or not lease_active?(claim_owner, parse_datetime(Map.get(issue, "lease_expires_at")), now)
+  end
+
+  defp active_claim_reason(issue) when is_map(issue) do
+    {:issue_claimed, map_string(issue, "claimed_by"), map_string(issue, "lease_expires_at")}
+  end
+
+  defp lease_active?(claimed_by, %DateTime{} = lease_expires_at, %DateTime{} = now)
+       when is_binary(claimed_by) do
+    DateTime.compare(lease_expires_at, now) == :gt
+  end
+
+  defp lease_active?(_claimed_by, _lease_expires_at, _now), do: false
+
+  defp claim_expires_at(now, ttl_ms) when is_integer(ttl_ms) and ttl_ms > 0 do
+    DateTime.add(now, ttl_ms, :millisecond)
+  end
+
+  defp timestamp_iso8601(%DateTime{} = datetime) do
+    datetime
+    |> DateTime.truncate(:second)
+    |> DateTime.to_iso8601()
+  end
 
   defp normalize_string_list(values) when is_list(values) do
     values
@@ -472,8 +619,14 @@ defmodule SymphonyElixir.Tracker.Local do
 
   defp now_iso8601 do
     DateTime.utc_now()
-    |> DateTime.truncate(:second)
-    |> DateTime.to_iso8601()
+    |> timestamp_iso8601()
+  end
+
+  defp claim_ttl_ms(opts) when is_list(opts) do
+    case Keyword.get(opts, :ttl_ms) do
+      ttl_ms when is_integer(ttl_ms) and ttl_ms > 0 -> ttl_ms
+      _ -> 180_000
+    end
   end
 
   defp tracker_path do

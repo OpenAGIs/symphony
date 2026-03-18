@@ -20,8 +20,11 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 4. Sends a workflow prompt to Codex
 5. Keeps Codex working on the issue until the work is done
 
-During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls when the tracker is Linear.
+During app-server sessions, Symphony serves tracker-aware client-side tools:
+
+- `linear_graphql` when the tracker is `linear`
+- `local_issue_list`, `local_issue_create`, `local_issue_state`, and
+  `local_issue_comment` when the tracker is `local`
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -35,8 +38,8 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
    - `local`: point Symphony at a local JSON issue store and run without Linear.
 3. Copy this directory's `WORKFLOW.md` to your repo.
 4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
-     operations such as comment editing or upload flows.
+   - The `linear` skill is only relevant when you keep `tracker.kind: linear`, because it expects
+     Symphony's `linear_graphql` app-server tool for raw Linear GraphQL operations.
 5. Customize the copied `WORKFLOW.md` file for your project.
    - For `linear`, get your project's slug by right-clicking the project and copying its URL. The
      slug is part of the URL.
@@ -254,6 +257,9 @@ bin/symphony issue comment LOCAL-1 "Validation passed locally."
 
 When the web dashboard is enabled, the `/` LiveView also exposes a local issue panel for creating
 issues and moving them between states without leaving the browser.
+
+Local runs also expose repo-native dynamic tools inside Codex app-server turns, so skills can list,
+create, comment on, and move local issues without going through Linear.
 
 ## Web dashboard
 

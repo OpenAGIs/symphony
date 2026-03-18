@@ -492,6 +492,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <dd><%= local_issue_worker_label(issue.assigned_to_worker) %></dd>
                     </div>
                     <div>
+                      <dt>Claimed By</dt>
+                      <dd class="mono"><%= issue.claimed_by || "unclaimed" %></dd>
+                    </div>
+                    <div>
+                      <dt>Claimed At</dt>
+                      <dd class="mono"><%= issue.claimed_at || "n/a" %></dd>
+                    </div>
+                    <div>
+                      <dt>Lease Expires</dt>
+                      <dd class="mono"><%= issue.lease_expires_at || "n/a" %></dd>
+                    </div>
+                    <div>
                       <dt>Source</dt>
                       <dd>
                         <%= if issue.url do %>
@@ -741,7 +753,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
       branch_name: issue.branch_name,
       blocked_by: issue.blocked_by || [],
       url: issue.url,
-      assigned_to_worker: Map.get(issue, :assigned_to_worker, true)
+      assigned_to_worker: Map.get(issue, :assigned_to_worker, true),
+      claimed_by: issue.claimed_by,
+      claimed_at: local_issue_timestamp(issue.claimed_at),
+      lease_expires_at: local_issue_timestamp(issue.lease_expires_at)
     }
   end
 

@@ -149,6 +149,145 @@ defmodule SymphonyElixir.LocalTrackerTest do
     assert {:error, :invalid_local_tracker_payload} = Local.fetch_candidate_issues()
   end
 
+  test "local tracker atomically claims and releases issues for distributed runs" do
+    tracker_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "issues.json")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: tracker_path,
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    File.write!(
+      tracker_path,
+      Jason.encode!(
+        %{
+          "issues" => [
+            %{
+              "id" => "issue-lease-1",
+              "identifier" => "LOC-L1",
+              "title" => "Leased issue",
+              "state" => "Todo"
+            },
+            %{
+              "id" => "issue-lease-1b",
+              "identifier" => "LOC-L1B",
+              "title" => "Sibling issue",
+              "state" => "Todo"
+            }
+          ]
+        },
+        pretty: true
+      )
+    )
+
+    assert :ok = Local.claim_issue("issue-lease-1", "runtime-a", ttl_ms: 60_000)
+
+    assert {:error, {:issue_claimed, "runtime-a", lease_expires_at}} =
+             Local.claim_issue("issue-lease-1", "runtime-b", ttl_ms: 60_000)
+
+    assert is_binary(lease_expires_at)
+    assert {:ok, [%Issue{id: "issue-lease-1b", claimed_by: nil}]} = Local.fetch_candidate_issues()
+
+    assert {:ok, [%Issue{id: "issue-lease-1", claimed_by: "runtime-a", lease_expires_at: %DateTime{}}]} =
+             Local.fetch_issue_states_by_ids(["issue-lease-1"])
+
+    assert {:error, {:issue_claimed, "runtime-a", ^lease_expires_at}} =
+             Local.release_issue_claim("issue-lease-1", "runtime-b")
+
+    assert :ok = Local.release_issue_claim("issue-lease-1", "runtime-a")
+
+    assert {:ok, candidates} = Local.fetch_candidate_issues()
+    assert Enum.map(candidates, & &1.id) == ["issue-lease-1", "issue-lease-1b"]
+  end
+
+  test "local tracker lets expired claims return to the candidate pool" do
+    tracker_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "issues.json")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: tracker_path,
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    File.write!(
+      tracker_path,
+      Jason.encode!(
+        %{
+          "issues" => [
+            %{
+              "id" => "issue-lease-2",
+              "identifier" => "LOC-L2",
+              "title" => "Expiring issue",
+              "state" => "Todo"
+            }
+          ]
+        },
+        pretty: true
+      )
+    )
+
+    assert :ok = Local.claim_issue("issue-lease-2", "runtime-a", ttl_ms: 1)
+    Process.sleep(10)
+
+    assert {:ok, [%Issue{id: "issue-lease-2"}]} = Local.fetch_candidate_issues()
+    assert :ok = Local.claim_issue("issue-lease-2", "runtime-b", ttl_ms: 60_000)
+
+    assert {:ok, [%Issue{id: "issue-lease-2", claimed_by: "runtime-b"}]} =
+             Local.fetch_issue_states_by_ids(["issue-lease-2"])
+  end
+
+  test "local tracker renews same-owner claims, supports force release, and surfaces missing refs" do
+    tracker_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "issues.json")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: tracker_path,
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    File.write!(
+      tracker_path,
+      Jason.encode!(
+        %{
+          "issues" => [
+            %{
+              "id" => "issue-lease-3",
+              "identifier" => "LOC-L3",
+              "title" => "Renewable issue",
+              "state" => "Todo"
+            }
+          ]
+        },
+        pretty: true
+      )
+    )
+
+    assert {:error, :issue_not_found} = Local.claim_issue("missing", "runtime-a")
+    assert {:error, :issue_not_found} = Local.release_issue_claim("missing", "runtime-a")
+
+    assert :ok = Local.claim_issue("issue-lease-3", "runtime-a")
+    assert {:ok, [%Issue{lease_expires_at: first_expiry}]} = Local.fetch_issue_states_by_ids(["issue-lease-3"])
+    assert %DateTime{} = first_expiry
+
+    Process.sleep(10)
+    assert :ok = Local.claim_issue("issue-lease-3", "runtime-a", ttl_ms: 60_000)
+
+    assert {:ok, [%Issue{claimed_by: "runtime-a", lease_expires_at: renewed_expiry}]} =
+             Local.fetch_issue_states_by_ids(["issue-lease-3"])
+
+    assert %DateTime{} = renewed_expiry
+    refute DateTime.compare(renewed_expiry, first_expiry) == :eq
+
+    assert :ok = Local.release_issue_claim("issue-lease-3")
+
+    assert {:ok, [%Issue{claimed_by: nil, lease_expires_at: nil}]} =
+             Local.fetch_issue_states_by_ids(["issue-lease-3"])
+  end
+
   test "local tracker normalizes raw payloads and keyword attrs" do
     tracker_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "issues.json")
 
