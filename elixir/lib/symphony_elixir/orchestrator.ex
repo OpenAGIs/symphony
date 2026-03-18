@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.Orchestrator do
   @moduledoc """
-  Polls Linear and dispatches repository copies to Codex-backed workers.
+  Polls the configured tracker and dispatches repository copies to Codex-backed workers.
   """
 
   use GenServer
@@ -174,16 +174,20 @@ defmodule SymphonyElixir.Orchestrator do
     state = reconcile_running_issues(state)
 
     with :ok <- Config.validate!(),
-         {:ok, issues} <- Tracker.fetch_candidate_issues(),
-         true <- available_slots(state) > 0 do
+         true <- available_slots(state) > 0,
+         {:ok, issues} <- Tracker.fetch_candidate_issues() do
       choose_issues(issues, state)
     else
       {:error, :missing_linear_api_token} ->
-        Logger.error("Linear API token missing in WORKFLOW.md")
+        Logger.error("Tracker API token missing in WORKFLOW.md (required for linear tracker)")
         state
 
       {:error, :missing_linear_project_slug} ->
-        Logger.error("Linear project slug missing in WORKFLOW.md")
+        Logger.error("Tracker project slug missing in WORKFLOW.md (required for linear tracker)")
+        state
+
+      {:error, :missing_local_tracker_path} ->
+        Logger.error("Local tracker path missing in WORKFLOW.md")
         state
 
       {:error, :missing_tracker_kind} ->
@@ -224,8 +228,12 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Failed to parse WORKFLOW.md: #{inspect(reason)}")
         state
 
+      {:error, :linear_rate_limited} ->
+        Logger.warning("Tracker API rate limited (linear tracker); skipping this poll cycle to back off")
+        state
+
       {:error, reason} ->
-        Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
+        Logger.error("Failed to fetch from tracker: #{inspect(reason)}")
         state
 
       false ->
@@ -723,7 +731,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata) do
-    case Tracker.fetch_candidate_issues() do
+    case Tracker.fetch_issue_states_by_ids([issue_id]) do
       {:ok, issues} ->
         issues
         |> find_issue_by_id(issue_id)
@@ -1236,10 +1244,16 @@ defmodule SymphonyElixir.Orchestrator do
       [:params, :msg, :payload, :info, :total_token_usage],
       ["params", "msg", "info", "total_token_usage"],
       [:params, :msg, :info, :total_token_usage],
+      ["params", "msg", "payload", "info"],
+      [:params, :msg, :payload, :info],
+      ["params", "msg", "info"],
+      [:params, :msg, :info],
       ["params", "tokenUsage", "total"],
       [:params, :tokenUsage, :total],
       ["tokenUsage", "total"],
-      [:tokenUsage, :total]
+      [:tokenUsage, :total],
+      ["params", "usage"],
+      [:params, :usage]
     ]
 
     explicit_map_at_paths(payload, absolute_paths)
@@ -1367,11 +1381,13 @@ defmodule SymphonyElixir.Orchestrator do
       "input_tokens",
       "output_tokens",
       "total_tokens",
+      "total_token_usage",
       "prompt_tokens",
       "completion_tokens",
       "inputTokens",
       "outputTokens",
       "totalTokens",
+      "total_token_usage",
       "promptTokens",
       "completionTokens"
     ]
@@ -1416,8 +1432,10 @@ defmodule SymphonyElixir.Orchestrator do
     do:
       payload_get(usage, [
         "total_tokens",
+        "total_token_usage",
         "total",
         :total_tokens,
+        :total_token_usage,
         :total,
         "totalTokens",
         :totalTokens

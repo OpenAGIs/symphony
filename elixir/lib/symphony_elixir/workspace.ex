@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Workspace do
   """
 
   require Logger
-  alias SymphonyElixir.Config
+  alias SymphonyElixir.{Config, Workflow}
 
   @excluded_entries MapSet.new([".elixir_ls", "tmp"])
 
@@ -170,7 +170,11 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        System.cmd("sh", ["-lc", command],
+          cd: workspace,
+          stderr_to_stdout: true,
+          env: hook_env(workspace, issue_context)
+        )
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -197,6 +201,22 @@ defmodule SymphonyElixir.Workspace do
 
     {:error, {:workspace_hook_failed, hook_name, status, output}}
   end
+
+  defp hook_env(workspace, issue_context) do
+    workflow_file = Workflow.workflow_file_path() |> Path.expand()
+
+    [
+      {"SYMPHONY_WORKSPACE", Path.expand(workspace)},
+      {"SYMPHONY_ISSUE_ID", hook_env_value(issue_context.issue_id)},
+      {"SYMPHONY_ISSUE_IDENTIFIER", hook_env_value(issue_context.issue_identifier)},
+      {"SYMPHONY_WORKFLOW_FILE", workflow_file},
+      {"SYMPHONY_WORKFLOW_DIR", Path.dirname(workflow_file)}
+    ]
+  end
+
+  defp hook_env_value(nil), do: ""
+  defp hook_env_value(value) when is_binary(value), do: value
+  defp hook_env_value(value), do: to_string(value)
 
   defp sanitize_hook_output_for_log(output, max_bytes \\ 2_048) do
     binary_output = IO.iodata_to_binary(output)

@@ -13,7 +13,7 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 
 ## How it works
 
-1. Polls Linear for candidate work
+1. Polls the configured tracker for candidate work
 2. Creates an isolated workspace per issue
 3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
    workspace
@@ -21,7 +21,7 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 5. Keeps Codex working on the issue until the work is done
 
 During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+skills can make raw Linear GraphQL calls when the tracker is Linear.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -30,17 +30,19 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
 
 1. Make sure your codebase is set up to work well with agents: see
    [Harness engineering](https://openai.com/index/harness-engineering/).
-2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
-   set it as the `LINEAR_API_KEY` environment variable.
+2. Pick a tracker backend.
+   - `linear`: use a Linear personal token and project slug.
+   - `local`: point Symphony at a local JSON issue store and run without Linear.
 3. Copy this directory's `WORKFLOW.md` to your repo.
 4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
    - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
      operations such as comment editing or upload flows.
 5. Customize the copied `WORKFLOW.md` file for your project.
-   - To get your project's slug, right-click the project and copy its URL. The slug is part of the
-     URL.
-   - When creating a workflow based on this repo, note that it depends on non-standard Linear
-     issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
+   - For `linear`, get your project's slug by right-clicking the project and copying its URL. The
+     slug is part of the URL.
+   - For `local`, set `tracker.path` to a writable JSON file.
+   - When using `linear`, note that the stock workflow depends on non-standard Linear issue
+     statuses: "Rework", "Human Review", and "Merging". You can customize them in
      Team Settings → Workflow in Linear.
 6. Follow the instructions below to install the required runtime dependencies and start the service.
 
@@ -65,6 +67,9 @@ mise exec -- mix build
 mise exec -- ./bin/symphony ./WORKFLOW.md
 ```
 
+The bundled local workflow now also enables the browser dashboard by default at
+`http://127.0.0.1:4000/`.
+
 ## Configuration
 
 Pass a custom workflow file path to `./bin/symphony` when starting the service:
@@ -78,7 +83,13 @@ If no path is passed, Symphony defaults to `./WORKFLOW.md`.
 Optional flags:
 
 - `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)
-- `--port` also starts the Phoenix observability service (default: disabled)
+- `--port` overrides the dashboard port defined in `WORKFLOW.md`
+
+You can print the configured dashboard URL at any time with:
+
+```bash
+./bin/symphony panel
+```
 
 The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
 Codex session prompt.
@@ -94,7 +105,14 @@ workspace:
   root: ~/code/workspaces
 hooks:
   after_create: |
-    git clone git@github.com:your-org/your-repo.git .
+    python3 "$SYMPHONY_WORKFLOW_DIR/scripts/ops/symphony_workspace_bootstrap.py" bootstrap \
+      --workspace "$SYMPHONY_WORKSPACE" \
+      --issue "$SYMPHONY_ISSUE_IDENTIFIER" \
+      --repo-url "$SYMPHONY_BOOTSTRAP_REPO_URL" \
+      --default-branch "${SYMPHONY_BOOTSTRAP_DEFAULT_BRANCH:-main}" \
+      --cache-base "${SYMPHONY_BOOTSTRAP_CACHE_BASE:-$HOME/.cache/symphony/repos}" \
+      --cache-key "${SYMPHONY_BOOTSTRAP_CACHE_KEY:-}" \
+      --json
 agent:
   max_concurrent_agents: 10
   max_turns: 20
@@ -105,6 +123,32 @@ codex:
 You are working on a Linear issue {{ issue.identifier }}.
 
 Title: {{ issue.title }} Body: {{ issue.description }}
+```
+
+Local-only example:
+
+```md
+---
+tracker:
+  kind: local
+  path: ./local-issues.json
+  active_states: ["Todo", "In Progress"]
+  terminal_states: ["Done", "Closed", "Cancelled", "Canceled", "Duplicate"]
+workspace:
+  root: ~/code/workspaces
+server:
+  host: 127.0.0.1
+  port: 4000
+agent:
+  max_concurrent_agents: 4
+codex:
+  command: codex app-server
+---
+
+You are working on a locally tracked issue {{ issue.identifier }}.
+
+Title: {{ issue.title }}
+Body: {{ issue.description }}
 ```
 
 Notes:
@@ -122,8 +166,14 @@ Notes:
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
+- Set `server.host` / `server.port` to make the browser dashboard available during local runs.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
+- Hook commands receive `SYMPHONY_WORKSPACE`, `SYMPHONY_ISSUE_ID`, `SYMPHONY_ISSUE_IDENTIFIER`,
+  `SYMPHONY_WORKFLOW_FILE`, and `SYMPHONY_WORKFLOW_DIR`, which makes it safe to call bootstrap
+  helpers that live next to the source `WORKFLOW.md` even before the workspace repo exists.
+- Those hook env vars are enough to support a shared local mirror + `git worktree` bootstrap,
+  so parallel Symphony workspaces can reuse one cached repo instead of re-cloning on each issue.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
@@ -139,7 +189,14 @@ workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 hooks:
   after_create: |
-    git clone --depth 1 "$SOURCE_REPO_URL" .
+    python3 "$SYMPHONY_WORKFLOW_DIR/scripts/ops/symphony_workspace_bootstrap.py" bootstrap \
+      --workspace "$SYMPHONY_WORKSPACE" \
+      --issue "$SYMPHONY_ISSUE_IDENTIFIER" \
+      --repo-url "$SYMPHONY_BOOTSTRAP_REPO_URL" \
+      --default-branch "${SYMPHONY_BOOTSTRAP_DEFAULT_BRANCH:-main}" \
+      --cache-base "${SYMPHONY_BOOTSTRAP_CACHE_BASE:-$HOME/.cache/symphony/repos}" \
+      --cache-key "${SYMPHONY_BOOTSTRAP_CACHE_KEY:-}" \
+      --json
 codex:
   command: "$CODEX_BIN app-server --model gpt-5.3-codex"
 ```
@@ -147,6 +204,56 @@ codex:
 - If `WORKFLOW.md` is missing or has invalid YAML, startup and scheduling are halted until fixed.
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
   `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+
+## Running without Linear
+
+Set `tracker.kind: local` and point `tracker.path` at a JSON issue store. Symphony will then reuse
+the same multi-issue orchestrator, workspace isolation, and `agent.max_concurrent_agents` fan-out
+without calling Linear at all.
+
+Sample local issue store:
+
+```json
+{
+  "issues": [
+    {
+      "id": "local-1",
+      "identifier": "LOCAL-1",
+      "title": "Refactor the scheduler retry path",
+      "description": "Move retry state into the orchestrator and add regression coverage.",
+      "priority": 1,
+      "state": "Todo",
+      "labels": ["orchestrator", "scheduler"],
+      "assigned_to_worker": true
+    },
+    {
+      "id": "local-2",
+      "identifier": "LOCAL-2",
+      "title": "Replace tracker-specific prompt copy",
+      "description": "Rename Linear-specific wording in runtime prompts and docs.",
+      "priority": 2,
+      "state": "In Progress",
+      "labels": ["docs"],
+      "assigned_to_worker": true
+    }
+  ]
+}
+```
+
+If you want a starter file, copy [`examples/local-issues.sample.json`](./examples/local-issues.sample.json).
+
+For day-to-day local operation, the bundled [`WORKFLOW.md`](./WORKFLOW.md) now points at
+[`local-issues.json`](./local-issues.json). You can manage that store from the CLI:
+
+```bash
+bin/symphony issue list
+bin/symphony issue create --title "Replace the remaining Linear handoffs"
+bin/symphony issue state LOCAL-1 "In Progress"
+bin/symphony issue comment LOCAL-1 "Validation passed locally."
+```
+
+When the web dashboard is enabled, the `/` LiveView also exposes a local issue panel for creating
+issues and moving them between states without leaving the browser.
 
 ## Web dashboard
 

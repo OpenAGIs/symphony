@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.CLITest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureIO
+
   alias SymphonyElixir.CLI
 
   @ack_flag "--i-understand-that-this-will-be-running-without-the-usual-guardrails"
@@ -135,5 +137,45 @@ defmodule SymphonyElixir.CLITest do
     }
 
     assert :ok = CLI.evaluate([@ack_flag, "WORKFLOW.md"], deps)
+  end
+
+  test "panel command prints the configured dashboard url without requiring the guardrails flag" do
+    workflow_dir = Path.join(System.tmp_dir!(), "symphony-panel-#{System.unique_integer([:positive])}")
+    workflow_path = Path.join(workflow_dir, "WORKFLOW.md")
+    previous_workflow = Application.get_env(:symphony_elixir, :workflow_file_path)
+
+    File.mkdir_p!(workflow_dir)
+
+    File.write!(
+      workflow_path,
+      """
+      ---
+      tracker:
+        kind: local
+        path: ./local-issues.json
+      server:
+        host: 127.0.0.1
+        port: 4100
+      ---
+      Panel prompt
+      """
+    )
+
+    on_exit(fn ->
+      if previous_workflow do
+        SymphonyElixir.Workflow.set_workflow_file_path(previous_workflow)
+      else
+        SymphonyElixir.Workflow.clear_workflow_file_path()
+      end
+
+      File.rm_rf(workflow_dir)
+    end)
+
+    output =
+      capture_io(fn ->
+        assert :halt = CLI.evaluate(["panel", "--workflow", workflow_path])
+      end)
+
+    assert output == "http://127.0.0.1:4100/\n"
   end
 end

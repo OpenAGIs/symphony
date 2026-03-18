@@ -118,6 +118,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       assert log =~ "pr list --repo openai/symphony --head feature/workpad --state open --json number --jq .[].number"
       assert log =~ "pr close 101 --repo openai/symphony"
       assert log =~ "pr close 102 --repo openai/symphony"
+      assert log =~ "Closing because the tracker issue for branch feature/workpad entered a terminal state without merge."
 
       {second_output, error_output} =
         capture_task_output(fn ->
