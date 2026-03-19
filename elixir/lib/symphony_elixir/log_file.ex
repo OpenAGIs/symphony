@@ -29,6 +29,18 @@ defmodule SymphonyElixir.LogFile do
     setup_disk_handler(log_file, max_bytes, max_files)
   end
 
+  @spec configured_log_file() :: Path.t()
+  def configured_log_file do
+    Application.get_env(:symphony_elixir, :log_file, default_log_file())
+  end
+
+  @spec log_directory() :: Path.t()
+  def log_directory do
+    configured_log_file()
+    |> Path.expand()
+    |> Path.dirname()
+  end
+
   defp setup_disk_handler(log_file, max_bytes, max_files) do
     expanded_path = Path.expand(log_file)
     :ok = File.mkdir_p(Path.dirname(expanded_path))

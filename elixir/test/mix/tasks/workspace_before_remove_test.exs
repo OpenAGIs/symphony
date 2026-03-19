@@ -366,26 +366,27 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
   end
 
   defp capture_task_output(fun) do
-    parent = self()
-    ref = make_ref()
+    previous_shell = Mix.shell()
+    Mix.shell(Mix.Shell.Process)
 
-    error_output =
-      capture_io(:stderr, fn ->
-        output =
-          capture_io(fn ->
-            fun.()
-          end)
+    try do
+      fun.()
+      {drain_mix_shell(:info), drain_mix_shell(:error)}
+    after
+      Mix.shell(previous_shell)
+    end
+  end
 
-        send(parent, {ref, output})
-      end)
-
-    output =
-      receive do
-        {^ref, output} -> output
-      after
-        1_000 -> flunk("Timed out waiting for captured task output")
-      end
-
-    {output, error_output}
+  defp drain_mix_shell(level, acc \\ []) do
+    receive do
+      {:mix_shell, ^level, [message]} ->
+        drain_mix_shell(level, [IO.iodata_to_binary(message) | acc])
+    after
+      10 ->
+        acc
+        |> Enum.reverse()
+        |> Enum.join("
+")
+    end
   end
 end

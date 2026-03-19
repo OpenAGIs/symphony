@@ -94,6 +94,19 @@ You can print the configured dashboard URL at any time with:
 ./bin/symphony panel
 ```
 
+## Worker runtime outputs
+
+Each agent run now emits a durable worker bundle under the configured log directory at
+`log/worker-runs/<timestamp>-<issue>/`.
+
+Each bundle includes:
+
+- `metadata.json` with issue/workspace/outcome timing
+- `codex-events.jsonl` with the streamed Codex turn events
+- `workspace-artifacts.json` with the regular files present in the issue workspace
+
+These files are intended to be upload-ready runtime outputs for artifact, trace, and log pipelines.
+
 The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
 Codex session prompt.
 

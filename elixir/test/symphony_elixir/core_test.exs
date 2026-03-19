@@ -1012,7 +1012,14 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       before = MapSet.new(File.ls!(workspace_root))
-      assert :ok = AgentRunner.run(issue)
+
+      assert :ok =
+               AgentRunner.run(
+                 issue,
+                 nil,
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+               )
+
       entries_after = MapSet.new(File.ls!(workspace_root))
 
       created =
@@ -1738,7 +1745,6 @@ defmodule SymphonyElixir.CoreTest do
       while IFS= read -r line; do
         count=$((count + 1))
         printf 'JSON:%s\\n' "$line" >> "$trace_file"
-
         case "$count" in
           1)
             printf '%s\\n' '{"id":1,"result":{}}'
@@ -1803,12 +1809,140 @@ defmodule SymphonyElixir.CoreTest do
                  |> Jason.decode!()
                  |> then(fn payload ->
                    payload["method"] == "turn/start" &&
-                     get_in(payload, ["params", "sandboxPolicy"]) == %{"type" => "externalSandbox", "networkAccess" => "restricted"}
+                     get_in(payload, ["params", "sandboxPolicy"]) == %{
+                       "type" => "externalSandbox",
+                       "networkAccess" => "restricted"
+                     }
                  end)
                else
                  false
                end
              end)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner persists worker runtime outputs for upload" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-runtime-output-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      logs_root = Path.join(test_root, "logs-root")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(template_repo)
+      File.mkdir_p!(workspace_root)
+      File.write!(Path.join(template_repo, "README.md"), "# runtime output\n")
+      File.write!(Path.join(template_repo, "artifact.txt"), "upload me\n")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md", "artifact.txt"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      Application.put_env(
+        :symphony_elixir,
+        :log_file,
+        SymphonyElixir.LogFile.default_log_file(logs_root)
+      )
+
+      on_exit(fn ->
+        Application.delete_env(:symphony_elixir, :log_file)
+      end)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-output"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-output"}}}'
+            printf '%s\\n' '{"method":"codex/event/task_started","params":{"task_id":"task-1"}}'
+            printf '%s\\n' '{"method":"turn/completed","params":{"result":"done"}}'
+            exit 0
+            ;;
+          *)
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md && cp #{Path.join(template_repo, "artifact.txt")} artifact.txt",
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-runtime-output",
+        identifier: "MT-OUTPUT",
+        title: "Persist outputs",
+        description: "Runtime outputs should be upload ready",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-OUTPUT",
+        labels: ["backend"]
+      }
+
+      assert :ok =
+               AgentRunner.run(
+                 issue,
+                 nil,
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+               )
+
+      runs_root = Path.join([logs_root, "log", "worker-runs"])
+      [run_dir_name] = File.ls!(runs_root)
+      run_dir = Path.join(runs_root, run_dir_name)
+
+      metadata = run_dir |> Path.join("metadata.json") |> File.read!() |> Jason.decode!()
+      artifacts = run_dir |> Path.join("workspace-artifacts.json") |> File.read!() |> Jason.decode!()
+
+      events =
+        run_dir
+        |> Path.join("codex-events.jsonl")
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.map(&Jason.decode!/1)
+
+      assert metadata["issue"] == %{"id" => "issue-runtime-output", "identifier" => "MT-OUTPUT"}
+      assert metadata["outcome"] == %{"status" => "ok"}
+
+      assert metadata["log_file"] ==
+               Path.join([logs_root, "log", "symphony.log"]) |> Path.expand()
+
+      assert Enum.any?(artifacts, &(&1["path"] == "README.md"))
+      assert Enum.any?(artifacts, &(&1["path"] == "artifact.txt"))
+
+      assert Enum.any?(
+               events,
+               &(&1["event"] == "session_started" &&
+                   &1["session_id"] == "thread-output-turn-output")
+             )
+
+      assert Enum.any?(
+               events,
+               &(&1["event"] == "notification" &&
+                   get_in(&1, ["payload", "method"]) == "codex/event/task_started")
+             )
+
+      assert Enum.any?(events, &(&1["event"] == "turn_completed"))
     after
       File.rm_rf(test_root)
     end

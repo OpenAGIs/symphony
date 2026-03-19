@@ -174,7 +174,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_receive :poll, 2_000
 
     Workflow.set_workflow_file_path(manual_path)
-    File.rm!(manual_path)
+    assert File.rm(manual_path) in [:ok, {:error, :enoent}]
     assert {:noreply, removed_state} = WorkflowStore.handle_info(:poll, path_error_state)
     assert removed_state.workflow.prompt == "Manual workflow prompt"
     assert_receive :poll, 2_000
