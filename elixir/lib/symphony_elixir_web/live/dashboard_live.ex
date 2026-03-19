@@ -541,7 +541,24 @@ defmodule SymphonyElixirWeb.DashboardLive do
               </div>
 
               <div class="tracker-ops-grid">
-                <div class="tracker-ops-summary">
+                <article class="tracker-detail-card tracker-detail-card-ops tracker-ops-panel">
+                  <div class="tracker-detail-intro">
+                    <p class="eyebrow">Agent Parallel Studio</p>
+
+                    <div class="tracker-detail-header">
+                      <div class="issue-stack">
+                        <strong>Parallel agents, shared visibility</strong>
+                        <span class="muted">
+                          Capacity, runnable slices, and live sessions stay aligned with the focused issue for fast left-to-right scanning.
+                        </span>
+                      </div>
+
+                      <span class="metric-detail">
+                        <%= length(@local_tracker.issues) %> total issues · <%= local_tracker_runtime_count(@local_tracker, @payload, :running) %> live runs
+                      </span>
+                    </div>
+                  </div>
+
                   <div class="tracker-summary-grid">
                     <article class="tracker-summary-card">
                       <p class="metric-label">Agent Capacity</p>
@@ -574,14 +591,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </article>
                   </div>
 
-                  <article class="tracker-ops-brief">
-                    <p class="eyebrow">Studio Brief</p>
-                    <h4 class="tracker-ops-brief-title">Parallel agents, shared visibility</h4>
+                  <div class="tracker-runtime-card tracker-runtime-card-compact">
+                    <p class="metric-label">Studio Brief</p>
                     <p class="tracker-form-copy">
-                      Intake stays on top, the focused issue stays in the middle, and search plus board routing stay at the bottom so the operator always knows what to launch, watch, and move next.
+                      Intake stays on top, the studio and focused issue stay aligned in the middle, and search plus movement controls stay compact at the bottom so operators always know what to launch, inspect, and move next.
                     </p>
-                  </article>
-                </div>
+                  </div>
+                </article>
 
                 <article class="tracker-detail-card tracker-detail-card-ops">
                 <%= if issue = selected_local_issue(@local_tracker, @selected_local_issue_ref) do %>
@@ -895,30 +911,35 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         placeholder="migration"
                       />
                     </div>
+
+                    <div class="tracker-toolbar-actions">
+                      <div class="field-stack tracker-view-field">
+                        <label>Board view</label>
+                        <div class="tracker-view-toggle">
+                          <button
+                            type="button"
+                            class={tracker_view_button_class(@local_issue_view_mode, "list")}
+                            phx-click="set_local_issue_view"
+                            phx-value-mode="list"
+                          >
+                            List
+                          </button>
+                          <button
+                            type="button"
+                            class={tracker_view_button_class(@local_issue_view_mode, "board")}
+                            phx-click="set_local_issue_view"
+                            phx-value-mode="board"
+                          >
+                            Board
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </form>
 
-                  <div class="tracker-toolbar-meta">
-                    <p class="metric-detail">Route the queue by view mode or live runtime state.</p>
-
-                    <div class="tracker-view-toggle">
-                      <button
-                        type="button"
-                        class={tracker_view_button_class(@local_issue_view_mode, "list")}
-                        phx-click="set_local_issue_view"
-                        phx-value-mode="list"
-                      >
-                        List
-                      </button>
-                      <button
-                        type="button"
-                        class={tracker_view_button_class(@local_issue_view_mode, "board")}
-                        phx-click="set_local_issue_view"
-                        phx-value-mode="board"
-                      >
-                        Board
-                      </button>
-                    </div>
-                  </div>
+                  <p class="metric-detail tracker-toolbar-copy">
+                    Search, board routing, and inline issue movement stay on one compact control rail whenever space allows.
+                  </p>
                 </div>
               <% end %>
 
@@ -1000,8 +1021,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                           <th>Priority</th>
                           <th>Labels</th>
                           <th>Updated</th>
-                          <th>Focus</th>
-                          <th>Move</th>
+                          <th>Actions</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1027,33 +1047,34 @@ defmodule SymphonyElixirWeb.DashboardLive do
                           <td><%= local_issue_labels(issue.labels) %></td>
                           <td class="mono"><%= issue.updated_at || "n/a" %></td>
                           <td>
-                            <button
-                              type="button"
-                              class="secondary tracker-focus-button"
-                              phx-click="select_local_issue"
-                              phx-value-issue_ref={issue.id}
-                            >
-                              Focus
-                            </button>
-                          </td>
-                          <td>
-                            <form
-                              id={"local-issue-state-#{issue.id}"}
-                              class="issue-state-form"
-                              phx-submit="update_local_issue_state"
-                            >
-                              <input type="hidden" name="issue_ref" value={issue.id} />
-                              <select name="state">
-                                <option
-                                  :for={state <- @local_issue_states}
-                                  selected={state == issue.state}
-                                  value={state}
-                                >
-                                  <%= state %>
-                                </option>
-                              </select>
-                              <button type="submit" class="secondary">Set</button>
-                            </form>
+                            <div class="tracker-list-actions">
+                              <button
+                                type="button"
+                                class="secondary tracker-focus-button"
+                                phx-click="select_local_issue"
+                                phx-value-issue_ref={issue.id}
+                              >
+                                Focus
+                              </button>
+
+                              <form
+                                id={"local-issue-state-#{issue.id}"}
+                                class="issue-state-form issue-state-form-inline"
+                                phx-submit="update_local_issue_state"
+                              >
+                                <input type="hidden" name="issue_ref" value={issue.id} />
+                                <select name="state">
+                                  <option
+                                    :for={state <- @local_issue_states}
+                                    selected={state == issue.state}
+                                    value={state}
+                                  >
+                                    <%= state %>
+                                  </option>
+                                </select>
+                                <button type="submit" class="secondary">Set</button>
+                              </form>
+                            </div>
                           </td>
                         </tr>
                       </tbody>

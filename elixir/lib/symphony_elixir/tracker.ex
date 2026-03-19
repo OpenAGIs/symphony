@@ -82,7 +82,8 @@ defmodule SymphonyElixir.Tracker do
       "local" -> Local
       "memory" -> Memory
       "linear" -> LinearAdapter
-      kind -> adapter_for_kind(to_string(kind))
+      kind when is_binary(kind) -> Config.tracker_adapter_module() || adapter_for_kind(kind)
+      _kind -> Unsupported
     end
   end
 

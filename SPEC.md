@@ -2133,7 +2133,8 @@ Use the same validation profiles as Section 17:
   implementation details.
 - TODO: Add first-class tracker write APIs (comments/state transitions) in the orchestrator instead
   of only via agent tools.
-- TODO: Add pluggable issue tracker adapters beyond Linear.
+- Optional tracker runtimes may bind non-built-in `tracker.kind` values to workflow-configured or
+  host-registered adapter modules, as long as they satisfy the tracker contract in Section 11.
 
 ### 18.3 Operational Validation Before Production (Recommended)
 

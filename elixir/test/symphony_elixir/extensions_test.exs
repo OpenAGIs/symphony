@@ -253,13 +253,25 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert :ok = SymphonyElixir.Tracker.release_issue_claim("issue-1", "runtime-a")
   end
 
-  test "tracker resolves configured non-linear adapters and unsupported fallback" do
+  test "tracker resolves workflow-configured custom adapters, legacy env adapters, and unsupported fallback" do
+    issue = %Issue{id: "issue-2", identifier: "BIG-2", state: "Todo"}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "bigclaw",
+      tracker_adapter_module: "SymphonyElixir.Tracker.Memory"
+    )
+
+    assert Config.tracker_adapter_module() == Memory
+    assert SymphonyElixir.Tracker.adapter() == Memory
+    assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_candidate_issues()
+
     Application.put_env(:symphony_elixir, :tracker_adapter_modules, %{"jira" => Memory})
 
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "jira")
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "jira", tracker_adapter_module: nil)
     assert SymphonyElixir.Tracker.adapter() == Memory
 
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "github")
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "github", tracker_adapter_module: nil)
     assert SymphonyElixir.Tracker.adapter() == Unsupported
 
     assert {:error, {:unsupported_tracker_adapter, "github"}} =
@@ -282,6 +294,9 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert {:error, {:unsupported_tracker_adapter, "github"}} =
              SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: nil, tracker_adapter_module: nil)
+    assert SymphonyElixir.Tracker.adapter() == Unsupported
   end
 
   test "linear adapter delegates reads and validates mutation responses" do
@@ -779,6 +794,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_css =~ ".status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
+    assert dashboard_css =~ ".tracker-list-actions"
+    assert dashboard_css =~ ".tracker-ops-panel"
 
     phoenix_html_js = response(get(build_conn(), "/vendor/phoenix_html/phoenix_html.js"), 200)
     assert phoenix_html_js =~ "phoenix.link.click"
@@ -926,6 +943,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Local issues"
     assert html =~ "Agent Capacity"
+    assert html =~ "Focused issue"
     assert html =~ "LOCAL-1"
     assert html =~ "Move the workflow UI local"
     assert html =~ tracker_path

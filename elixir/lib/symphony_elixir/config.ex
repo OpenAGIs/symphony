@@ -59,12 +59,23 @@ defmodule SymphonyElixir.Config do
   @default_workflow_approvals %{}
   @default_workflow_retry %{}
   @default_workflow_writeback %{}
+  @tracker_adapter_callbacks [
+    {:fetch_candidate_issues, 0},
+    {:fetch_issues_by_states, 1},
+    {:fetch_issue_states_by_ids, 1},
+    {:create_comment, 2},
+    {:ensure_workpad_comment, 2},
+    {:update_comment, 2},
+    {:update_issue_state, 2}
+  ]
+  @module_name_pattern ~r/^(?:Elixir\.)?(?:[A-Z][A-Za-z0-9_]*)(?:\.[A-Z][A-Za-z0-9_]*)*$/
   @workflow_options_schema NimbleOptions.new!(
                              tracker: [
                                type: :map,
                                default: %{},
                                keys: [
                                  kind: [type: {:or, [:string, nil]}, default: nil],
+                                 adapter_module: [type: {:or, [:string, nil]}, default: nil],
                                  endpoint: [type: :string, default: @default_linear_endpoint],
                                  api_key: [type: {:or, [:string, nil]}, default: nil],
                                  project_slug: [type: {:or, [:string, nil]}, default: nil],
@@ -279,6 +290,13 @@ defmodule SymphonyElixir.Config do
       "memory" -> "memory"
       _ -> "issue tracker"
     end
+  end
+
+  @spec tracker_adapter_module() :: module() | nil
+  def tracker_adapter_module do
+    validated_workflow_options()
+    |> get_in([:tracker, :adapter_module])
+    |> resolve_tracker_adapter_module()
   end
 
   @spec linear_endpoint() :: String.t()
@@ -615,6 +633,7 @@ defmodule SymphonyElixir.Config do
   @spec validate!() :: :ok | {:error, term()}
   def validate! do
     with {:ok, _workflow} <- current_workflow(),
+         :ok <- require_tracker_adapter_module(),
          :ok <- require_tracker_kind(),
          :ok <- require_linear_token(),
          :ok <- require_linear_project(),
@@ -642,13 +661,49 @@ defmodule SymphonyElixir.Config do
 
   defp require_tracker_kind do
     case tracker_kind() do
-      "github" -> :ok
-      "jira" -> :ok
-      "linear" -> :ok
-      "local" -> :ok
-      "memory" -> :ok
-      nil -> {:error, :missing_tracker_kind}
-      other -> {:error, {:unsupported_tracker_kind, other}}
+      "github" ->
+        :ok
+
+      "jira" ->
+        :ok
+
+      "linear" ->
+        :ok
+
+      "local" ->
+        :ok
+
+      "memory" ->
+        :ok
+
+      nil ->
+        {:error, :missing_tracker_kind}
+
+      other ->
+        if custom_tracker_adapter_configured?(other) do
+          :ok
+        else
+          {:error, {:unsupported_tracker_kind, other}}
+        end
+    end
+  end
+
+  defp require_tracker_adapter_module do
+    case fetch_value([["tracker", "adapter_module"]], :missing) do
+      :missing ->
+        :ok
+
+      nil ->
+        :ok
+
+      value when is_binary(value) ->
+        case parse_tracker_adapter_module(value) do
+          {:ok, _module} -> :ok
+          {:error, reason} -> {:error, {:invalid_tracker_adapter_module, reason}}
+        end
+
+      value ->
+        {:error, {:invalid_tracker_adapter_module, value}}
     end
   end
 
@@ -735,6 +790,7 @@ defmodule SymphonyElixir.Config do
       :kind,
       normalize_tracker_kind(scalar_string_value(Map.get(section, "kind")))
     )
+    |> put_if_present(:adapter_module, module_name_value(Map.get(section, "adapter_module")))
     |> put_if_present(:endpoint, scalar_string_value(Map.get(section, "endpoint")))
     |> put_if_present(:api_key, binary_value(Map.get(section, "api_key"), allow_empty: true))
     |> put_if_present(:project_slug, scalar_string_value(Map.get(section, "project_slug")))
@@ -884,6 +940,15 @@ defmodule SymphonyElixir.Config do
   end
 
   defp execution_environment_value(_value), do: :omit
+
+  defp module_name_value(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> :omit
+      trimmed -> trimmed
+    end
+  end
+
+  defp module_name_value(_value), do: :omit
 
   defp hook_command_value(value) when is_binary(value) do
     case String.trim(value) do
@@ -1295,6 +1360,62 @@ defmodule SymphonyElixir.Config do
   end
 
   defp normalize_tracker_kind(_kind), do: nil
+
+  defp custom_tracker_adapter_configured?(kind) when is_binary(kind) do
+    configured_module = tracker_adapter_module()
+
+    not is_nil(configured_module) or not is_nil(env_tracker_adapter_module(kind))
+  end
+
+  defp env_tracker_adapter_module(kind) when is_binary(kind) do
+    Application.get_env(:symphony_elixir, :tracker_adapter_modules, %{})
+    |> Map.get(kind)
+  end
+
+  defp resolve_tracker_adapter_module(nil), do: nil
+
+  defp resolve_tracker_adapter_module(value) when is_binary(value) do
+    case parse_tracker_adapter_module(value) do
+      {:ok, module} -> module
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp parse_tracker_adapter_module(value) when is_binary(value) do
+    adapter_module = String.trim(value)
+
+    cond do
+      adapter_module == "" ->
+        {:error, value}
+
+      not Regex.match?(@module_name_pattern, adapter_module) ->
+        {:error, {:invalid_module_name, adapter_module}}
+
+      true ->
+        module =
+          adapter_module
+          |> String.trim_leading("Elixir.")
+          |> String.split(".", trim: true)
+          |> Module.concat()
+
+        case Code.ensure_compiled(module) do
+          {:module, ^module} -> validate_tracker_adapter_callbacks(module)
+          {:error, _reason} -> {:error, {:module_not_found, adapter_module}}
+        end
+    end
+  end
+
+  defp validate_tracker_adapter_callbacks(module) when is_atom(module) do
+    missing_callbacks =
+      Enum.reject(@tracker_adapter_callbacks, fn {name, arity} ->
+        function_exported?(module, name, arity)
+      end)
+
+    case missing_callbacks do
+      [] -> {:ok, module}
+      callbacks -> {:error, {:missing_callbacks, module, callbacks}}
+    end
+  end
 
   defp default_prompt_template do
     String.replace(@default_prompt_template, "{{ tracker.display_name }}", tracker_display_name())

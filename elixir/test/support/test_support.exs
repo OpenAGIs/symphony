@@ -82,6 +82,7 @@ defmodule SymphonyElixir.TestSupport do
       Keyword.merge(
         [
           tracker_kind: "linear",
+          tracker_adapter_module: nil,
           tracker_endpoint: "https://api.linear.app/graphql",
           tracker_api_token: "token",
           tracker_project_slug: "project",
@@ -139,6 +140,7 @@ defmodule SymphonyElixir.TestSupport do
       )
 
     tracker_kind = Keyword.get(config, :tracker_kind)
+    tracker_adapter_module = Keyword.get(config, :tracker_adapter_module)
     tracker_endpoint = Keyword.get(config, :tracker_endpoint)
     tracker_api_token = Keyword.get(config, :tracker_api_token)
     tracker_project_slug = Keyword.get(config, :tracker_project_slug)
@@ -197,6 +199,7 @@ defmodule SymphonyElixir.TestSupport do
         "---",
         "tracker:",
         "  kind: #{yaml_value(tracker_kind)}",
+        "  adapter_module: #{yaml_value(tracker_adapter_module)}",
         "  endpoint: #{yaml_value(tracker_endpoint)}",
         "  api_key: #{yaml_value(tracker_api_token)}",
         "  project_slug: #{yaml_value(tracker_project_slug)}",

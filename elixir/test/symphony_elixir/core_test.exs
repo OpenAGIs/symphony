@@ -97,6 +97,24 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "github")
     assert :ok = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "bigclaw",
+      tracker_adapter_module: "SymphonyElixir.Tracker.Memory"
+    )
+
+    assert Config.tracker_adapter_module() == SymphonyElixir.Tracker.Memory
+    assert :ok = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "bigclaw",
+      tracker_adapter_module: "SymphonyElixir.DoesNotExist"
+    )
+
+    assert Config.tracker_adapter_module() == nil
+
+    assert {:error, {:invalid_tracker_adapter_module, {:module_not_found, "SymphonyElixir.DoesNotExist"}}} =
+             Config.validate!()
   end
 
   test "current WORKFLOW.md file is valid and complete" do

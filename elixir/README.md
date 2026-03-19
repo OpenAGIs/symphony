@@ -35,6 +35,8 @@ For most teams, only these sections need attention:
 
 1. `tracker`
    Use `local` for a repo-native JSON tracker or `linear` for a Linear project.
+   For another tracker kind, set `tracker.adapter_module` to an Elixir module that implements the
+   `SymphonyElixir.Tracker` callbacks.
 2. `workspace.root`
    Choose where Symphony should create per-issue workspaces.
 3. `server`
@@ -140,6 +142,8 @@ Minimal example:
 tracker:
   kind: linear
   project_slug: "..."
+  # Optional for custom tracker kinds:
+  # adapter_module: "MyApp.Symphony.JiraAdapter"
 workspace:
   root: ~/code/workspaces
 hooks:
@@ -220,8 +224,8 @@ Preset mapping for `codex.execution_environment`:
   identifier, title, body, and tracker display name.
 - Set `server.host` / `server.port` to make the browser dashboard available during local runs.
 - Built-in tracker runtime support is currently provided for `linear`, `local`, and `memory`;
-  `jira` and `github` resolve cleanly at the workflow/task-entry layer and can be bound to runtime
-  adapters through `:tracker_adapter_modules`.
+  any other tracker kind can be bound to a runtime adapter with `tracker.adapter_module`, and the
+  older `:tracker_adapter_modules` app env remains supported for compatibility.
 - `workflow` is an optional front-matter extension for declarative execution policy. The current
   implementation preserves and exposes `workflow.strategy`, `workflow.acceptance`,
   `workflow.approvals`, `workflow.retry`, and `workflow.writeback` as typed config and template
