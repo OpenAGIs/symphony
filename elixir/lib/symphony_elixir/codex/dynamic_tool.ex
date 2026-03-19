@@ -3,13 +3,20 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.{Config, Tracker.Local}
   alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.Tracker.Local
+  alias SymphonyElixir.{Config, Tracker, Workpad}
 
   @linear_graphql_tool "linear_graphql"
+  @linear_workpad_tool "linear_workpad"
+
   @linear_graphql_description """
   Execute a raw GraphQL query or mutation against Linear using Symphony's configured auth.
   """
+  @linear_workpad_description """
+  Ensure and update the single persistent Linear workpad comment for an issue.
+  """
+
   @linear_graphql_input_schema %{
     "type" => "object",
     "additionalProperties" => false,
@@ -26,6 +33,36 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     }
   }
+
+  @linear_workpad_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["action"],
+    "properties" => %{
+      "action" => %{
+        "type" => "string",
+        "enum" => ["ensure", "update"],
+        "description" => "`ensure` reuses or creates the workpad comment; `update` replaces the comment body."
+      },
+      "issueId" => %{
+        "type" => ["string", "null"],
+        "description" => "Linear issue ID. Required for `ensure`."
+      },
+      "environmentStamp" => %{
+        "type" => ["string", "null"],
+        "description" => "Environment stamp used when creating the bootstrap workpad template. Required for `ensure`."
+      },
+      "commentId" => %{
+        "type" => ["string", "null"],
+        "description" => "Existing workpad comment ID. Required for `update`."
+      },
+      "body" => %{
+        "type" => ["string", "null"],
+        "description" => "Replacement workpad body. Required for `update`."
+      }
+    }
+  }
+
   @local_issue_list_tool "local_issue_list"
   @local_issue_create_tool "local_issue_create"
   @local_issue_state_tool "local_issue_state"
@@ -143,6 +180,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       {"linear", @linear_graphql_tool} ->
         execute_linear_graphql(arguments, opts)
 
+      {"linear", @linear_workpad_tool} ->
+        execute_linear_workpad(arguments, opts)
+
       {"local", @local_issue_list_tool} ->
         execute_local_issue_list(arguments)
 
@@ -177,6 +217,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
             "name" => @linear_graphql_tool,
             "description" => @linear_graphql_description,
             "inputSchema" => @linear_graphql_input_schema
+          },
+          %{
+            "name" => @linear_workpad_tool,
+            "description" => @linear_workpad_description,
+            "inputSchema" => @linear_workpad_input_schema
           }
         ]
 
@@ -223,6 +268,54 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     else
       {:error, reason} ->
         failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp execute_linear_workpad(arguments, opts) do
+    ensure_workpad = Keyword.get(opts, :workpad_ensure, &Tracker.ensure_workpad_comment/2)
+    update_comment = Keyword.get(opts, :comment_update, &Tracker.update_comment/2)
+
+    case normalize_linear_workpad_arguments(arguments) do
+      {:ok, :ensure, payload} ->
+        ensure_linear_workpad(payload, ensure_workpad)
+
+      {:ok, :update, payload} ->
+        update_linear_workpad(payload, update_comment)
+
+      {:error, reason} ->
+        failure_response(tool_error_payload(reason, @linear_workpad_tool))
+    end
+  end
+
+  defp ensure_linear_workpad(payload, ensure_workpad) do
+    body = Workpad.bootstrap_body(payload.environment_stamp)
+
+    case ensure_workpad.(payload.issue_id, body) do
+      {:ok, %{id: comment_id, body: persisted_body, created?: created?}} ->
+        success_response(%{
+          "action" => "ensure",
+          "commentId" => comment_id,
+          "body" => persisted_body,
+          "created" => created?,
+          "header" => Workpad.header()
+        })
+
+      {:error, reason} ->
+        failure_response(tool_error_payload(reason, @linear_workpad_tool))
+    end
+  end
+
+  defp update_linear_workpad(payload, update_comment) do
+    case update_comment.(payload.comment_id, payload.body) do
+      :ok ->
+        success_response(%{
+          "action" => "update",
+          "commentId" => payload.comment_id,
+          "updated" => true
+        })
+
+      {:error, reason} ->
+        failure_response(tool_error_payload(reason, @linear_workpad_tool))
     end
   end
 
@@ -362,6 +455,36 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp normalize_local_issue_release_arguments(_arguments), do: {:error, :invalid_local_issue_release_arguments}
 
+  defp normalize_linear_workpad_arguments(arguments) when is_map(arguments) do
+    case Map.get(arguments, "action") || Map.get(arguments, :action) do
+      "ensure" ->
+        with {:ok, issue_id} <- require_string(arguments, ["issueId", :issueId], :missing_issue_id),
+             {:ok, environment_stamp} <-
+               require_string(
+                 arguments,
+                 ["environmentStamp", :environmentStamp],
+                 :missing_environment_stamp
+               ) do
+          {:ok, :ensure, %{issue_id: issue_id, environment_stamp: environment_stamp}}
+        end
+
+      "update" ->
+        with {:ok, comment_id} <-
+               require_string(arguments, ["commentId", :commentId], :missing_comment_id),
+             {:ok, body} <- require_string(arguments, ["body", :body], :missing_body) do
+          {:ok, :update, %{comment_id: comment_id, body: body}}
+        end
+
+      action when is_binary(action) ->
+        {:error, {:unsupported_workpad_action, action}}
+
+      _ ->
+        {:error, :missing_workpad_action}
+    end
+  end
+
+  defp normalize_linear_workpad_arguments(_arguments), do: {:error, :invalid_workpad_arguments}
+
   defp normalize_query(arguments) do
     case Map.get(arguments, "query") || Map.get(arguments, :query) do
       query when is_binary(query) ->
@@ -449,6 +572,21 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
       _ ->
         {:error, {:invalid_string_list_arg, key}}
+    end
+  end
+
+  defp require_string(arguments, keys, error_reason) do
+    value = Enum.find_value(keys, fn key -> Map.get(arguments, key) end)
+
+    case value do
+      item when is_binary(item) ->
+        case String.trim(item) do
+          "" -> {:error, error_reason}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _ ->
+        {:error, error_reason}
     end
   end
 
@@ -670,6 +808,38 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "reason" => inspect(reason)
       }
     }
+  end
+
+  defp tool_error_payload(:missing_workpad_action, @linear_workpad_tool) do
+    %{"error" => %{"message" => "`linear_workpad` requires an `action` of `ensure` or `update`."}}
+  end
+
+  defp tool_error_payload(:invalid_workpad_arguments, @linear_workpad_tool) do
+    %{"error" => %{"message" => "`linear_workpad` expects an object with `action` plus the required fields for that action."}}
+  end
+
+  defp tool_error_payload(:missing_issue_id, @linear_workpad_tool) do
+    %{"error" => %{"message" => "`linear_workpad.ensure` requires a non-empty `issueId` string."}}
+  end
+
+  defp tool_error_payload(:missing_environment_stamp, @linear_workpad_tool) do
+    %{"error" => %{"message" => "`linear_workpad.ensure` requires a non-empty `environmentStamp` string."}}
+  end
+
+  defp tool_error_payload(:missing_comment_id, @linear_workpad_tool) do
+    %{"error" => %{"message" => "`linear_workpad.update` requires a non-empty `commentId` string."}}
+  end
+
+  defp tool_error_payload(:missing_body, @linear_workpad_tool) do
+    %{"error" => %{"message" => "`linear_workpad.update` requires a non-empty `body` string."}}
+  end
+
+  defp tool_error_payload({:unsupported_workpad_action, action}, @linear_workpad_tool) do
+    %{"error" => %{"message" => "`linear_workpad` action must be `ensure` or `update`, got #{inspect(action)}."}}
+  end
+
+  defp tool_error_payload(reason, @linear_workpad_tool) do
+    %{"error" => %{"message" => "Linear workpad tool execution failed.", "reason" => inspect(reason)}}
   end
 
   defp supported_tool_names do

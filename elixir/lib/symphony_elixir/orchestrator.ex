@@ -951,6 +951,90 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp clear_dead_letter(%State{} = state, issue_id) when is_binary(issue_id) do
+    %{state | dead_letters: Map.delete(state.dead_letters, issue_id)}
+  end
+
+  defp schedule_issue_retry_at(%State{} = state, issue_id, attempt, metadata, delay_ms)
+       when is_binary(issue_id) and is_integer(attempt) and attempt > 0 and is_integer(delay_ms) and
+              delay_ms >= 0 do
+    previous_retry = Map.get(state.retry_attempts, issue_id, %{})
+    old_timer = Map.get(previous_retry, :timer_ref)
+
+    if is_reference(old_timer) do
+      Process.cancel_timer(old_timer)
+    end
+
+    due_at_ms = System.monotonic_time(:millisecond) + delay_ms
+    retry_at_unix_ms = System.system_time(:millisecond) + delay_ms
+    timer_ref = Process.send_after(self(), {:retry_issue, issue_id}, delay_ms)
+    error_suffix = if is_binary(metadata[:error]), do: " error=#{metadata[:error]}", else: ""
+
+    Logger.warning("Retrying issue_id=#{issue_id} issue_identifier=#{metadata[:identifier]} in #{delay_ms}ms (attempt #{attempt})#{error_suffix}")
+
+    %{
+      state
+      | retry_attempts:
+          Map.put(state.retry_attempts, issue_id, %{
+            attempt: attempt,
+            timer_ref: timer_ref,
+            due_at_ms: due_at_ms,
+            retry_at_unix_ms: retry_at_unix_ms,
+            identifier: metadata[:identifier],
+            error: metadata[:error]
+          }),
+        dead_letters: Map.delete(state.dead_letters, issue_id)
+    }
+  end
+
+  defp dead_letter_issue(%State{} = state, issue_id, attempt, metadata)
+       when is_binary(issue_id) and is_integer(attempt) and attempt > 0 do
+    if previous_timer = get_in(state.retry_attempts, [issue_id, :timer_ref]) do
+      Process.cancel_timer(previous_timer)
+    end
+
+    identifier = metadata[:identifier] || issue_id
+    error = metadata[:error]
+
+    Logger.error("Issue exhausted retries and moved to dead letter queue issue_id=#{issue_id} issue_identifier=#{identifier} attempt=#{attempt} error=#{inspect(error)}")
+
+    note_dead_letter(issue_id, identifier, attempt, error)
+
+    state = release_issue_claim(state, issue_id)
+
+    %{
+      state
+      | dead_letters:
+          Map.put(state.dead_letters, issue_id, %{
+            attempt: attempt,
+            identifier: identifier,
+            error: error,
+            failed_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+          })
+    }
+  end
+
+  defp note_dead_letter(issue_id, identifier, attempt, error) do
+    message =
+      [
+        "Symphony moved this issue to the dead-letter queue after #{attempt} failed attempts.",
+        error && "Last error: #{error}",
+        "Move the issue back into an active state or request a refresh after addressing the blocker."
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join("\n")
+
+    case Tracker.create_comment(issue_id, message) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Failed to record dead-letter comment issue_id=#{issue_id} issue_identifier=#{identifier}: #{inspect(reason)}")
+
+        :ok
+    end
+  end
+
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
     if metadata[:delay_type] == :continuation and attempt == 1 do
       @continuation_retry_delay_ms

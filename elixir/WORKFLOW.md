@@ -87,6 +87,7 @@ Instructions:
 
 - Start by checking the issue's current state and route work accordingly.
 - Create or update `.symphony/workpad.md` before making code changes.
+- When `tracker.kind` is `linear` and the `linear_workpad` tool is available, keep the persistent `## Codex Workpad` comment aligned with the same plan, validation, and notes.
 - Reproduce the current behavior first so the fix target is explicit.
 - Add acceptance criteria and validation steps to the workpad before implementation.
 - Keep the workpad current whenever scope, risks, or validation evidence changes.
@@ -133,3 +134,4 @@ Instructions:
 
 - Only stop early for a true blocker such as missing repository access, missing required secrets, or a broken toolchain that cannot be repaired in-session.
 - When blocked, write a concise blocker note in `.symphony/workpad.md`.
+- If you are also using `linear_workpad`, mirror the blocker there for shared visibility.

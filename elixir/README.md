@@ -22,9 +22,9 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 
 During app-server sessions, Symphony serves tracker-aware client-side tools:
 
-- `linear_graphql` when the tracker is `linear`
-- `local_issue_list`, `local_issue_create`, `local_issue_state`, and
-  `local_issue_comment` when the tracker is `local`
+- `linear_graphql` and `linear_workpad` when the tracker is `linear`
+- `local_issue_list`, `local_issue_create`, `local_issue_state`,
+  `local_issue_comment`, and `local_issue_release` when the tracker is `local`
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -38,8 +38,10 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
    - `local`: point Symphony at a local JSON issue store and run without Linear.
 3. Copy this directory's `WORKFLOW.md` to your repo.
 4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill is only relevant when you keep `tracker.kind: linear`, because it expects
-     Symphony's `linear_graphql` app-server tool for raw Linear GraphQL operations.
+   - The `linear` skill is only relevant when you keep `tracker.kind: linear`.
+   - Use `linear_graphql` for raw GraphQL operations such as uploads or custom mutations.
+   - Use `linear_workpad` to find, create, and update the single persistent
+     `## Codex Workpad` comment for an issue.
 5. Customize the copied `WORKFLOW.md` file for your project.
    - For `linear`, get your project's slug by right-clicking the project and copying its URL. The
      slug is part of the URL.

@@ -17,6 +17,13 @@ defmodule SymphonyElixir.Tracker.Unsupported do
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(_issue_id, _body), do: {:error, unsupported_reason()}
 
+  @spec ensure_workpad_comment(String.t(), String.t()) ::
+          {:ok, %{id: String.t(), body: String.t(), created?: boolean()}} | {:error, term()}
+  def ensure_workpad_comment(_issue_id, _body), do: {:error, unsupported_reason()}
+
+  @spec update_comment(String.t(), String.t()) :: :ok | {:error, term()}
+  def update_comment(_comment_id, _body), do: {:error, unsupported_reason()}
+
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(_issue_id, _state_name), do: {:error, unsupported_reason()}
 

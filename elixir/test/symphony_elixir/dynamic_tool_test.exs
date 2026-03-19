@@ -8,25 +8,36 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     :ok
   end
 
-  test "tool_specs advertises the linear_graphql input contract for the linear tracker" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
-
+  test "tool_specs advertises linear GraphQL and workpad contracts" do
     assert [
              %{
-               "description" => description,
+               "description" => graphql_description,
                "inputSchema" => %{
-                 "properties" => %{
-                   "query" => _,
-                   "variables" => _
-                 },
+                 "properties" => %{"query" => _, "variables" => _},
                  "required" => ["query"],
                  "type" => "object"
                },
                "name" => "linear_graphql"
+             },
+             %{
+               "description" => workpad_description,
+               "inputSchema" => %{
+                 "properties" => %{
+                   "action" => _,
+                   "body" => _,
+                   "commentId" => _,
+                   "environmentStamp" => _,
+                   "issueId" => _
+                 },
+                 "required" => ["action"],
+                 "type" => "object"
+               },
+               "name" => "linear_workpad"
              }
            ] = DynamicTool.tool_specs()
 
-    assert description =~ "Linear"
+    assert graphql_description =~ "Linear"
+    assert workpad_description =~ "workpad"
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do
@@ -46,7 +57,152 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Jason.decode!(text) == %{
              "error" => %{
                "message" => ~s(Unsupported dynamic tool: "not_a_real_tool".),
-               "supportedTools" => ["linear_graphql"]
+               "supportedTools" => ["linear_graphql", "linear_workpad"]
+             }
+           }
+  end
+
+  test "linear_workpad ensure creates or reuses the persistent workpad comment" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_workpad",
+        %{
+          "action" => "ensure",
+          "issueId" => "issue-1",
+          "environmentStamp" => "host:/tmp/workspace@abc123"
+        },
+        workpad_ensure: fn issue_id, body ->
+          send(test_pid, {:workpad_ensure_called, issue_id, body})
+          {:ok, %{id: "comment-1", body: body, created?: true}}
+        end
+      )
+
+    assert_received {:workpad_ensure_called, "issue-1", body}
+    assert body =~ "## Codex Workpad"
+    assert body =~ "host:/tmp/workspace@abc123"
+    assert response["success"] == true
+    assert [%{"text" => text}] = response["contentItems"]
+
+    assert Jason.decode!(text) == %{
+             "action" => "ensure",
+             "body" => body,
+             "commentId" => "comment-1",
+             "created" => true,
+             "header" => "## Codex Workpad"
+           }
+  end
+
+  test "linear_workpad update overwrites the existing workpad comment" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_workpad",
+        %{"action" => "update", "commentId" => "comment-1", "body" => "## Codex Workpad\nupdated"},
+        comment_update: fn comment_id, body ->
+          send(test_pid, {:comment_update_called, comment_id, body})
+          :ok
+        end
+      )
+
+    assert_received {:comment_update_called, "comment-1", "## Codex Workpad\nupdated"}
+    assert response["success"] == true
+    assert [%{"text" => text}] = response["contentItems"]
+    assert Jason.decode!(text) == %{"action" => "update", "commentId" => "comment-1", "updated" => true}
+  end
+
+  test "linear_workpad validates required arguments and action names" do
+    missing_action = DynamicTool.execute("linear_workpad", %{})
+    assert missing_action["success"] == false
+    assert [%{"text" => missing_action_text}] = missing_action["contentItems"]
+
+    assert Jason.decode!(missing_action_text) == %{
+             "error" => %{"message" => "`linear_workpad` requires an `action` of `ensure` or `update`."}
+           }
+
+    invalid_action = DynamicTool.execute("linear_workpad", %{"action" => "delete"})
+    assert [%{"text" => invalid_action_text}] = invalid_action["contentItems"]
+
+    assert Jason.decode!(invalid_action_text) == %{
+             "error" => %{"message" => "`linear_workpad` action must be `ensure` or `update`, got \"delete\"."}
+           }
+
+    missing_issue =
+      DynamicTool.execute("linear_workpad", %{"action" => "ensure", "environmentStamp" => "env"})
+
+    assert [%{"text" => missing_issue_text}] = missing_issue["contentItems"]
+
+    assert Jason.decode!(missing_issue_text) == %{
+             "error" => %{"message" => "`linear_workpad.ensure` requires a non-empty `issueId` string."}
+           }
+
+    missing_environment = DynamicTool.execute("linear_workpad", %{"action" => "ensure", "issueId" => "issue-1"})
+    assert [%{"text" => missing_environment_text}] = missing_environment["contentItems"]
+
+    assert Jason.decode!(missing_environment_text) == %{
+             "error" => %{
+               "message" => "`linear_workpad.ensure` requires a non-empty `environmentStamp` string."
+             }
+           }
+
+    missing_comment = DynamicTool.execute("linear_workpad", %{"action" => "update", "body" => "body"})
+    assert [%{"text" => missing_comment_text}] = missing_comment["contentItems"]
+
+    assert Jason.decode!(missing_comment_text) == %{
+             "error" => %{"message" => "`linear_workpad.update` requires a non-empty `commentId` string."}
+           }
+
+    missing_body = DynamicTool.execute("linear_workpad", %{"action" => "update", "commentId" => "comment-1"})
+    assert [%{"text" => missing_body_text}] = missing_body["contentItems"]
+
+    assert Jason.decode!(missing_body_text) == %{
+             "error" => %{"message" => "`linear_workpad.update` requires a non-empty `body` string."}
+           }
+
+    invalid_shape = DynamicTool.execute("linear_workpad", [:bad])
+    assert [%{"text" => invalid_shape_text}] = invalid_shape["contentItems"]
+
+    assert Jason.decode!(invalid_shape_text) == %{
+             "error" => %{
+               "message" => "`linear_workpad` expects an object with `action` plus the required fields for that action."
+             }
+           }
+  end
+
+  test "linear_workpad formats tracker failures" do
+    response =
+      DynamicTool.execute(
+        "linear_workpad",
+        %{"action" => "update", "commentId" => "comment-1", "body" => "updated"},
+        comment_update: fn _comment_id, _body -> {:error, :boom} end
+      )
+
+    assert response["success"] == false
+    assert [%{"text" => text}] = response["contentItems"]
+
+    assert Jason.decode!(text) == %{
+             "error" => %{
+               "message" => "Linear workpad tool execution failed.",
+               "reason" => ":boom"
+             }
+           }
+
+    ensure_failure =
+      DynamicTool.execute(
+        "linear_workpad",
+        %{"action" => "ensure", "issueId" => "issue-1", "environmentStamp" => "env"},
+        workpad_ensure: fn _issue_id, _body -> {:error, :lookup_failed} end
+      )
+
+    assert ensure_failure["success"] == false
+    assert [%{"text" => ensure_failure_text}] = ensure_failure["contentItems"]
+
+    assert Jason.decode!(ensure_failure_text) == %{
+             "error" => %{
+               "message" => "Linear workpad tool execution failed.",
+               "reason" => ":lookup_failed"
              }
            }
   end

@@ -1244,6 +1244,9 @@ Symphony does not require first-class tracker write APIs in the orchestrator.
   `Human Review`) rather than tracker terminal state `Done`.
 - If the optional `linear_graphql` client-side tool extension is implemented, it is still part of
   the agent toolchain rather than orchestrator business logic.
+- Implementations may additionally expose higher-level tracker helpers in the same agent toolchain
+  (for example a reusable workpad/execution-journal comment helper) so long as the orchestrator
+  still avoids workflow-specific tracker mutation logic.
 
 ## 12. Prompt Construction and Context Assembly
 
@@ -2124,6 +2127,8 @@ Use the same validation profiles as Section 17:
   exposes the baseline endpoints/error semantics in Section 13.7 if shipped.
 - Optional `linear_graphql` client-side tool extension exposes raw Linear GraphQL access through the
   app-server session using configured Symphony auth.
+- Optional higher-level Linear helper tools may expose workflow-aware comment operations such as
+  finding, creating, and updating a persistent workpad comment through the same session.
 - TODO: Make observability settings configurable in workflow front matter without prescribing UI
   implementation details.
 - TODO: Add first-class tracker write APIs (comments/state transitions) in the orchestrator instead

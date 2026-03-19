@@ -201,14 +201,26 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issues_by_states([" in progress ", 42])
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["issue-1"])
     assert :ok = SymphonyElixir.Tracker.create_comment("issue-1", "comment")
+
+    assert {:ok, %{id: "workpad:issue-1", body: "body", created?: true}} =
+             SymphonyElixir.Tracker.ensure_workpad_comment("issue-1", "body")
+
+    assert :ok = SymphonyElixir.Tracker.update_comment("comment-1", "updated")
     assert :ok = SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
     assert :ok = SymphonyElixir.Tracker.claim_issue("issue-1", "runtime-a")
     assert :ok = SymphonyElixir.Tracker.release_issue_claim("issue-1", "runtime-a")
     assert_receive {:memory_tracker_comment, "issue-1", "comment"}
+    assert_receive {:memory_tracker_ensure_workpad, "issue-1", "body"}
+    assert_receive {:memory_tracker_comment_update, "comment-1", "updated"}
     assert_receive {:memory_tracker_state_update, "issue-1", "Done"}
 
     Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
     assert :ok = Memory.create_comment("issue-1", "quiet")
+
+    assert {:ok, %{id: "workpad:issue-1", body: "body", created?: true}} =
+             Memory.ensure_workpad_comment("issue-1", "body")
+
+    assert :ok = Memory.update_comment("comment-1", "updated")
     assert :ok = Memory.update_issue_state("issue-1", "Quiet")
 
     local_tracker_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "issues.json")
@@ -311,6 +323,170 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert cached_update_query =~ "issueUpdate"
 
     Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "comments" => %{
+               "nodes" => [
+                 %{
+                   "id" => "comment-resolved",
+                   "body" => "## Codex Workpad\nold",
+                   "resolvedAt" => "2026-03-10T00:00:00Z",
+                   "updatedAt" => "2026-03-10T00:00:00Z",
+                   "createdAt" => "2026-03-10T00:00:00Z"
+                 },
+                 %{
+                   "id" => "comment-active",
+                   "body" => "## Codex Workpad\ncurrent",
+                   "resolvedAt" => nil,
+                   "updatedAt" => "2026-03-10T01:00:00Z",
+                   "createdAt" => "2026-03-10T00:30:00Z"
+                 }
+               ]
+             }
+           }
+         }
+       }}
+    )
+
+    assert {:ok, %{id: "comment-active", body: "## Codex Workpad\ncurrent", created?: false}} =
+             Adapter.ensure_workpad_comment("issue-1", "new body")
+
+    {workpad_lookup_query, _variables} =
+      assert_graphql_call_matching(fn query, variables ->
+        variables == %{issueId: "issue-1"} and query =~ "comments"
+      end)
+
+    assert workpad_lookup_query =~ "comments"
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok, %{"data" => %{"issue" => %{"comments" => %{"nodes" => []}}}}},
+        {:ok,
+         %{
+           "data" => %{
+             "commentCreate" => %{
+               "success" => true,
+               "comment" => %{"id" => "comment-new", "body" => "bootstrap"}
+             }
+           }
+         }}
+      ]
+    )
+
+    assert {:ok, %{id: "comment-new", body: "bootstrap", created?: true}} =
+             Adapter.ensure_workpad_comment("issue-1", "bootstrap")
+
+    {_workpad_lookup_query, _variables} =
+      assert_graphql_call_matching(fn query, variables ->
+        variables == %{issueId: "issue-1"} and query =~ "comments"
+      end)
+
+    {created_workpad_query, _variables} =
+      assert_graphql_call_matching(fn query, variables ->
+        variables == %{issueId: "issue-1", body: "bootstrap"} and query =~ "commentCreate"
+      end)
+
+    assert created_workpad_query =~ "commentCreate"
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok, %{"data" => %{"commentUpdate" => %{"success" => true}}}}
+    )
+
+    assert :ok = Adapter.update_comment("comment-1", "updated")
+    assert_receive {:graphql_called, comment_update_query, %{commentId: "comment-1", body: "updated"}}
+    assert comment_update_query =~ "commentUpdate"
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok, %{"data" => %{"commentUpdate" => %{"success" => false}}}}
+    )
+
+    assert {:error, :comment_update_failed} = Adapter.update_comment("comment-1", "broken")
+
+    Process.put({FakeLinearClient, :graphql_result}, {:error, :boom})
+    assert {:error, :boom} = Adapter.update_comment("comment-1", "boom")
+
+    Process.put({FakeLinearClient, :graphql_result}, {:ok, %{"data" => %{}}})
+    assert {:error, :comment_update_failed} = Adapter.update_comment("comment-1", "odd")
+
+    Process.put({FakeLinearClient, :graphql_result}, :unexpected)
+    assert {:error, :comment_update_failed} = Adapter.update_comment("comment-1", "unexpected")
+
+    Process.put({FakeLinearClient, :graphql_result}, {:error, :boom})
+    assert {:error, :boom} = Adapter.ensure_workpad_comment("issue-1", "bootstrap")
+
+    Process.put({FakeLinearClient, :graphql_result}, {:ok, %{"data" => %{"issue" => %{}}}})
+    assert {:error, :comment_lookup_failed} = Adapter.ensure_workpad_comment("issue-1", "bootstrap")
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "comments" => %{
+               "nodes" => [
+                 %{
+                   "body" => "## Codex Workpad\nmalformed",
+                   "resolvedAt" => nil,
+                   "updatedAt" => "2026-03-10T01:00:00Z",
+                   "createdAt" => "2026-03-10T00:30:00Z"
+                 }
+               ]
+             }
+           }
+         }
+       }}
+    )
+
+    assert {:error, :comment_lookup_failed} = Adapter.ensure_workpad_comment("issue-1", "bootstrap")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok, %{"data" => %{"issue" => %{"comments" => %{"nodes" => []}}}}},
+        {:ok, %{"data" => %{"commentCreate" => %{"success" => false}}}}
+      ]
+    )
+
+    assert {:error, :comment_create_failed} = Adapter.ensure_workpad_comment("issue-1", "bootstrap")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok, %{"data" => %{"issue" => %{"comments" => %{"nodes" => []}}}}},
+        {:ok, %{"data" => %{}}}
+      ]
+    )
+
+    assert {:error, :comment_create_failed} = Adapter.ensure_workpad_comment("issue-1", "bootstrap")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok, %{"data" => %{"issue" => %{"comments" => %{"nodes" => []}}}}},
+        {:error, :create_boom}
+      ]
+    )
+
+    assert {:error, :create_boom} = Adapter.ensure_workpad_comment("issue-1", "bootstrap")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok, %{"data" => %{"issue" => %{"comments" => %{"nodes" => []}}}}},
+        {:ok, %{"data" => %{"commentCreate" => %{"success" => true, "comment" => %{"id" => "comment-new"}}}}}
+      ]
+    )
+
+    assert {:error, :comment_create_failed} = Adapter.ensure_workpad_comment("issue-1", "bootstrap")
+
+    Process.put(
       {FakeLinearClient, :graphql_results},
       [
         {:ok,
@@ -383,6 +559,20 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
+  end
+
+  defp assert_graphql_call_matching(match_fun) when is_function(match_fun, 2) do
+    receive do
+      {:graphql_called, query, variables} ->
+        if match_fun.(query, variables) do
+          {query, variables}
+        else
+          assert_graphql_call_matching(match_fun)
+        end
+    after
+      1_000 ->
+        flunk("expected matching graphql call")
+    end
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do

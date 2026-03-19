@@ -103,6 +103,13 @@ defmodule SymphonyElixir.Tracker.Local do
     end)
   end
 
+  @spec ensure_workpad_comment(String.t(), String.t()) ::
+          {:ok, %{id: String.t(), body: String.t(), created?: boolean()}} | {:error, term()}
+  def ensure_workpad_comment(_issue_id, _body), do: {:error, :local_tracker_workpad_not_supported}
+
+  @spec update_comment(String.t(), String.t()) :: :ok | {:error, term()}
+  def update_comment(_comment_id, _body), do: {:error, :local_tracker_comment_update_not_supported}
+
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name)
       when is_binary(issue_id) and is_binary(state_name) do

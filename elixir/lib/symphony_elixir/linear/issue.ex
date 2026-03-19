@@ -6,13 +6,6 @@ defmodule SymphonyElixir.Linear.Issue do
   @deprecated "Use SymphonyElixir.Issue instead."
   @type t :: Issue.t()
 
-  @risk_levels %{
-    "low" => 1,
-    "medium" => 2,
-    "high" => 3,
-    "critical" => 4
-  }
-
   @spec label_names(t()) :: [String.t()]
   defdelegate label_names(issue), to: Issue
   defdelegate required_capabilities(issue), to: Issue
