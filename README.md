@@ -18,6 +18,24 @@ Symphony works best in codebases that have adopted
 [harness engineering](https://openai.com/index/harness-engineering/). Symphony is the next step --
 moving from managing coding agents to managing work that needs to get done.
 
+### Fastest Local Path
+
+If you want the shortest path to a working local setup, use the Elixir
+reference implementation:
+
+1. Open [`elixir/README.md`](elixir/README.md).
+2. Copy and edit `elixir/WORKFLOW.md`.
+3. From `elixir/`, start Symphony with `./bin/symphony ./WORKFLOW.md`.
+4. Open `http://127.0.0.1:4000/` to use the dashboard.
+
+The most important file is `WORKFLOW.md`. It controls:
+
+- which tracker Symphony polls
+- where issue workspaces are created
+- whether the web dashboard is enabled
+- what bootstrap hooks run before Codex starts
+- what prompt Codex receives for each issue
+
 ### Option 1. Make your own
 
 Tell your favorite coding agent to build Symphony in a programming language of your choice:

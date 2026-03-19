@@ -62,6 +62,39 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @spec attachment_preview(Conn.t(), map()) :: Conn.t()
+  def attachment_preview(conn, %{"issue_ref" => issue_ref, "attachment_id" => attachment_id}) do
+    case Local.fetch_attachment_file(issue_ref, attachment_id) do
+      {:ok, %{path: path, filename: filename, content_type: content_type, preview_kind: preview_kind}}
+      when preview_kind in [:text, :image, :pdf] ->
+        send_download(conn, {:file, path},
+          filename: filename,
+          content_type: content_type || MIME.from_path(filename),
+          disposition: :inline
+        )
+
+      {:ok, _attachment} ->
+        error_response(
+          conn,
+          415,
+          "attachment_preview_unsupported",
+          "Attachment cannot be previewed inline"
+        )
+
+      {:error, :issue_not_found} ->
+        error_response(conn, 404, "issue_not_found", "Issue not found")
+
+      {:error, :attachment_not_found} ->
+        error_response(conn, 404, "attachment_not_found", "Attachment not found")
+
+      {:error, :attachment_file_missing} ->
+        error_response(conn, 404, "attachment_file_missing", "Attachment file is missing")
+
+      {:error, reason} ->
+        error_response(conn, 500, "attachment_unavailable", inspect(reason))
+    end
+  end
+
   @spec method_not_allowed(Conn.t(), map()) :: Conn.t()
   def method_not_allowed(conn, _params) do
     error_response(conn, 405, "method_not_allowed", "Method not allowed")

@@ -690,6 +690,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Local issues"
     assert html =~ "Agent Capacity"
+    assert html =~ "Search"
+    assert html =~ "Board"
     assert html =~ "LOCAL-1"
     assert html =~ "Move the workflow UI local"
     assert html =~ tracker_path
@@ -732,6 +734,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert created_html =~ "Created LOCAL-2 with 1 file"
     assert created_html =~ "Add a local issue CLI entry"
     assert created_html =~ "architecture-notes.md"
+    assert created_html =~ "Attachment Preview"
+    assert created_html =~ "/preview"
 
     updated_html =
       view
@@ -759,6 +763,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert attachment_payload["filename"] == "architecture-notes.md"
     assert attachment_payload["content_type"] == "text/markdown"
+    assert attachment_payload["preview_kind"] == "text"
 
     attachment_conn = get(build_conn(), attachment_payload["download_url"])
 
@@ -767,6 +772,36 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert Enum.any?(Plug.Conn.get_resp_header(attachment_conn, "content-disposition"), fn value ->
              String.contains?(value, "architecture-notes.md")
            end)
+
+    preview_conn = get(build_conn(), attachment_payload["preview_url"])
+
+    assert response(preview_conn, 200) == "repo-native local tracker upload"
+
+    assert Enum.any?(Plug.Conn.get_resp_header(preview_conn, "content-disposition"), fn value ->
+             String.contains?(value, "inline") and String.contains?(value, "architecture-notes.md")
+           end)
+
+    filtered_html =
+      view
+      |> form("#local-issue-filters",
+        filters: %{
+          query: "",
+          state: "Done",
+          runtime: "all",
+          label: ""
+        }
+      )
+      |> render_change()
+
+    assert filtered_html =~ "Showing 1 of 2 issues"
+
+    board_html =
+      view
+      |> element("button[phx-value-mode=\"board\"]")
+      |> render_click()
+
+    assert board_html =~ "tracker-board-column"
+    assert board_html =~ "LOCAL-1"
   end
 
   test "dashboard liveview renders an unavailable state without crashing" do

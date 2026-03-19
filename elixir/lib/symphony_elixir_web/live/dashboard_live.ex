@@ -9,21 +9,23 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
   @issue_upload_max_entries 6
-  @issue_upload_max_file_size 20_000_000
 
   @impl true
   def mount(_params, _session, socket) do
     socket =
       socket
       |> allow_upload(:issue_files,
-        accept: :any,
+        accept: Local.attachment_upload_accepts(),
         max_entries: @issue_upload_max_entries,
-        max_file_size: @issue_upload_max_file_size
+        max_file_size: Local.attachment_max_file_size()
       )
       |> assign(:payload, load_payload())
       |> assign(:local_issue_states, local_issue_states())
+      |> assign(:local_issue_filters, default_local_issue_filters())
+      |> assign(:local_issue_view_mode, "list")
       |> assign(:local_tracker_feedback, nil)
       |> assign(:selected_local_issue_ref, nil)
+      |> assign(:selected_local_attachment_id, nil)
       |> assign(:now, DateTime.utc_now())
       |> refresh_local_tracker()
 
@@ -118,7 +120,23 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   def handle_event("select_local_issue", %{"issue_ref" => issue_ref}, socket) do
-    {:noreply, refresh_local_tracker(socket, issue_ref)}
+    {:noreply, refresh_local_tracker(socket, issue_ref, nil)}
+  end
+
+  def handle_event("select_local_attachment", %{"issue_ref" => issue_ref, "attachment_id" => attachment_id}, socket) do
+    {:noreply,
+     socket
+     |> assign(:selected_local_issue_ref, issue_ref)
+     |> assign(:selected_local_attachment_id, attachment_id)
+     |> refresh_local_tracker(issue_ref, attachment_id)}
+  end
+
+  def handle_event("filter_local_issues", %{"filters" => filters}, socket) do
+    {:noreply, assign(socket, :local_issue_filters, normalize_local_issue_filters(filters))}
+  end
+
+  def handle_event("set_local_issue_view", %{"mode" => mode}, socket) do
+    {:noreply, assign(socket, :local_issue_view_mode, normalize_local_issue_view_mode(mode))}
   end
 
   @impl true
@@ -356,128 +374,230 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </p>
           <% end %>
 
-          <div class="tracker-grid">
-            <div>
-              <div class="tracker-summary-grid">
-                <article class="tracker-summary-card">
-                  <p class="metric-label">Agent Capacity</p>
-                  <p class="metric-value"><%= local_tracker_capacity_value(@payload) %></p>
-                  <p class="metric-detail"><%= local_tracker_capacity_detail(@payload) %></p>
-                </article>
+          <% filtered_local_issues = filtered_local_issues(@local_tracker, @local_issue_filters, @payload) %>
+          <% board_columns = local_issue_board_columns(filtered_local_issues, @local_issue_states) %>
 
-                <article class="tracker-summary-card">
-                  <p class="metric-label">In Progress</p>
-                  <p class="metric-value"><%= local_issue_count(@local_tracker, ["In Progress"]) %></p>
-                  <p class="metric-detail">Current parallel work owned by the local tracker.</p>
-                </article>
+          <div class="tracker-studio">
+            <section class="tracker-stage tracker-stage-intake">
+              <div class="tracker-stage-header">
+                <div>
+                  <p class="eyebrow">Mission Intake</p>
+                  <h3 class="tracker-stage-title">Create issue in the local tracker</h3>
+                  <p class="tracker-stage-copy">
+                    Open a new workstream, attach source material, and launch the next parallel slice without leaving the dashboard.
+                  </p>
+                </div>
 
-                <article class="tracker-summary-card">
-                  <p class="metric-label">Runnable</p>
-                  <p class="metric-value"><%= local_issue_count(@local_tracker, ["Todo", "Rework"]) %></p>
-                  <p class="metric-detail">Queued slices that can be picked up next.</p>
-                </article>
-
-                <article class="tracker-summary-card">
-                  <p class="metric-label">Running Sessions</p>
-                  <p class="metric-value"><%= local_tracker_runtime_count(@local_tracker, @payload, :running) %></p>
-                  <p class="metric-detail">Issue runs currently attached to live agents.</p>
-                </article>
-
-                <article class="tracker-summary-card">
-                  <p class="metric-label">Retrying</p>
-                  <p class="metric-value"><%= local_tracker_runtime_count(@local_tracker, @payload, :retrying) %></p>
-                  <p class="metric-detail">Issues waiting out a retry backoff after a failed attempt.</p>
-                </article>
+                <div class="tracker-stage-meta">
+                  <span class="state-badge state-badge-active">intake live</span>
+                  <span class="muted">Repo-native issue intake for multi-agent execution.</span>
+                </div>
               </div>
 
-              <%= if @local_tracker.issues == [] do %>
-                <p class="empty-state">No local issues yet. Create one to start a new run.</p>
-              <% else %>
-                <div class="table-wrap">
-                  <table class="data-table" style="min-width: 920px;">
-                    <thead>
-                      <tr>
-                        <th>Issue</th>
-                        <th>Runtime</th>
-                        <th>State</th>
-                        <th>Priority</th>
-                        <th>Labels</th>
-                        <th>Updated</th>
-                        <th>Focus</th>
-                        <th>Move</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr :for={issue <- @local_tracker.issues} class={local_issue_row_class(issue, @selected_local_issue_ref)}>
-                        <td>
-                          <div class="issue-stack">
-                            <span class="issue-id"><%= issue.identifier %></span>
-                            <span><%= issue.title %></span>
-                            <span :if={issue.description} class="muted"><%= issue.description %></span>
-                          </div>
-                        </td>
-                        <td>
-                          <span class={local_issue_runtime_badge_class(issue, @payload)}>
-                            <%= local_issue_runtime_badge(issue, @payload) %>
-                          </span>
-                        </td>
-                        <td>
-                          <span class={state_badge_class(issue.state)}>
-                            <%= issue.state %>
-                          </span>
-                        </td>
-                        <td class="numeric"><%= local_issue_priority(issue.priority) %></td>
-                        <td><%= local_issue_labels(issue.labels) %></td>
-                        <td class="mono"><%= issue.updated_at || "n/a" %></td>
-                        <td>
-                          <button
-                            type="button"
-                            class="secondary tracker-focus-button"
-                            phx-click="select_local_issue"
-                            phx-value-issue_ref={issue.id}
-                          >
-                            Focus
-                          </button>
-                        </td>
-                        <td>
-                          <form
-                            id={"local-issue-state-#{issue.id}"}
-                            class="issue-state-form"
-                            phx-submit="update_local_issue_state"
-                          >
-                            <input type="hidden" name="issue_ref" value={issue.id} />
-                            <select name="state">
-                              <option
-                                :for={state <- @local_issue_states}
-                                selected={state == issue.state}
-                                value={state}
-                              >
-                                <%= state %>
-                              </option>
-                            </select>
-                            <button type="submit" class="secondary">Set</button>
-                          </form>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              <% end %>
-            </div>
+              <form id="local-issue-create-form" class="tracker-create-form tracker-create-form-top" phx-submit="create_local_issue">
+                <div class="tracker-create-grid">
+                  <section class="tracker-form-section">
+                    <p class="tracker-form-section-title">Essentials</p>
 
-            <div class="tracker-sidebar">
-              <article class="tracker-detail-card">
-                <%= if issue = selected_local_issue(@local_tracker, @selected_local_issue_ref) do %>
-                  <% runtime = local_issue_runtime_details(issue, @payload) %>
-                  <div class="tracker-detail-header">
-                    <div class="issue-stack">
-                      <span class="issue-id"><%= issue.identifier %></span>
-                      <strong><%= issue.title %></strong>
+                    <div class="field-stack">
+                      <label for="local-issue-title">Title</label>
+                      <input id="local-issue-title" type="text" name="issue[title]" required />
                     </div>
 
-                    <a class="issue-link" href={local_issue_detail_href(issue)}>
-                      JSON details
-                    </a>
+                    <div class="field-row">
+                      <div class="field-stack">
+                        <label for="local-issue-state">State</label>
+                        <select id="local-issue-state" name="issue[state]">
+                          <option :for={state <- @local_issue_states} value={state}>
+                            <%= state %>
+                          </option>
+                        </select>
+                      </div>
+
+                      <div class="field-stack">
+                        <label for="local-issue-priority">Priority</label>
+                        <input
+                          id="local-issue-priority"
+                          type="number"
+                          min="0"
+                          step="1"
+                          name="issue[priority]"
+                          placeholder="1"
+                        />
+                      </div>
+                    </div>
+
+                    <div class="field-stack">
+                      <label for="local-issue-labels">Labels</label>
+                      <input
+                        id="local-issue-labels"
+                        type="text"
+                        name="issue[labels]"
+                        placeholder="go, migration, local"
+                      />
+                    </div>
+                  </section>
+
+                  <section class="tracker-form-section">
+                    <p class="tracker-form-section-title">Context</p>
+
+                    <div class="field-stack">
+                      <label for="local-issue-description">Description</label>
+                      <textarea
+                        id="local-issue-description"
+                        name="issue[description]"
+                        rows="8"
+                        placeholder="Describe the scope, acceptance checks, and any blockers."
+                      ></textarea>
+                    </div>
+                  </section>
+
+                  <section class="tracker-form-section">
+                    <p class="tracker-form-section-title">Files</p>
+
+                    <div class="field-stack">
+                      <label for="local-issue-files">Issue Files</label>
+                      <div class="upload-panel" phx-drop-target={@uploads.issue_files.ref}>
+                        <.live_file_input id="local-issue-files" upload={@uploads.issue_files} />
+                        <p class="upload-copy">
+                          Upload specs, screenshots, or implementation notes directly into the local tracker.
+                        </p>
+                        <p class="upload-hint">
+                          Up to <%= issue_upload_max_entries() %> files, <%= format_bytes(issue_upload_max_file_size()) %> each.
+                        </p>
+                        <p class="upload-hint">
+                          Accepted formats: <%= local_issue_attachment_accept_summary() %>
+                        </p>
+                      </div>
+
+                      <%= for err <- upload_errors(@uploads.issue_files) do %>
+                        <p class="tracker-feedback tracker-feedback-error"><%= upload_error_message(err) %></p>
+                      <% end %>
+
+                      <div :if={@uploads.issue_files.entries != []} class="upload-entry-list">
+                        <%= for entry <- @uploads.issue_files.entries do %>
+                          <article class="upload-entry">
+                            <div class="tracker-attachment-copy">
+                              <strong><%= entry.client_name %></strong>
+                              <span class="muted"><%= format_bytes(entry.client_size) %></span>
+                            </div>
+                            <span class="muted"><%= entry.progress %>%</span>
+                          </article>
+
+                          <%= for err <- upload_errors(@uploads.issue_files, entry) do %>
+                            <p class="tracker-feedback tracker-feedback-error"><%= upload_error_message(err) %></p>
+                          <% end %>
+                        <% end %>
+                      </div>
+                    </div>
+                  </section>
+                </div>
+
+                <div class="tracker-create-actions">
+                  <button type="submit">Create local issue</button>
+                </div>
+              </form>
+            </section>
+
+            <section class="tracker-stage tracker-stage-ops">
+              <div class="tracker-stage-header">
+                <div>
+                  <p class="eyebrow">Agent Parallel Studio</p>
+                  <h3 class="tracker-stage-title">Agent Capacity and focused mission board</h3>
+                  <p class="tracker-stage-copy">
+                    Keep capacity, active lanes, and the focused issue centered while agents split work, retry, and converge on delivery.
+                  </p>
+                </div>
+
+                <div class="tracker-stage-meta">
+                  <span class="metric-detail">
+                    <%= length(@local_tracker.issues) %> total issues · <%= local_tracker_runtime_count(@local_tracker, @payload, :running) %> live runs
+                  </span>
+                </div>
+              </div>
+
+              <div class="tracker-ops-grid">
+                <div class="tracker-ops-summary">
+                  <div class="tracker-summary-grid">
+                    <article class="tracker-summary-card">
+                      <p class="metric-label">Agent Capacity</p>
+                      <p class="metric-value"><%= local_tracker_capacity_value(@payload) %></p>
+                      <p class="metric-detail"><%= local_tracker_capacity_detail(@payload) %></p>
+                    </article>
+
+                    <article class="tracker-summary-card">
+                      <p class="metric-label">In Progress</p>
+                      <p class="metric-value"><%= local_issue_count(@local_tracker, ["In Progress"]) %></p>
+                      <p class="metric-detail">Current parallel work owned by the local tracker.</p>
+                    </article>
+
+                    <article class="tracker-summary-card">
+                      <p class="metric-label">Runnable</p>
+                      <p class="metric-value"><%= local_issue_count(@local_tracker, ["Todo", "Rework"]) %></p>
+                      <p class="metric-detail">Queued slices that can be picked up next.</p>
+                    </article>
+
+                    <article class="tracker-summary-card">
+                      <p class="metric-label">Running Sessions</p>
+                      <p class="metric-value"><%= local_tracker_runtime_count(@local_tracker, @payload, :running) %></p>
+                      <p class="metric-detail">Issue runs currently attached to live agents.</p>
+                    </article>
+
+                    <article class="tracker-summary-card">
+                      <p class="metric-label">Retrying</p>
+                      <p class="metric-value"><%= local_tracker_runtime_count(@local_tracker, @payload, :retrying) %></p>
+                      <p class="metric-detail">Issues waiting out a retry backoff after a failed attempt.</p>
+                    </article>
+                  </div>
+
+                  <article class="tracker-ops-brief">
+                    <p class="eyebrow">Studio Brief</p>
+                    <h4 class="tracker-ops-brief-title">Parallel agents, shared visibility</h4>
+                    <p class="tracker-form-copy">
+                      Intake stays on top, the focused issue stays in the middle, and search plus board routing stay at the bottom so the operator always knows what to launch, watch, and move next.
+                    </p>
+                  </article>
+                </div>
+
+                <article class="tracker-detail-card tracker-detail-card-ops">
+                <%= if issue = selected_local_issue(@local_tracker, @selected_local_issue_ref) do %>
+                  <% runtime = local_issue_runtime_details(issue, @payload) %>
+                  <% selected_attachment = selected_local_attachment(issue, @selected_local_attachment_id) %>
+                  <div class="tracker-detail-intro">
+                    <p class="eyebrow">Focused issue</p>
+
+                    <div class="tracker-detail-header">
+                      <div class="issue-stack">
+                        <span class="issue-id"><%= issue.identifier %></span>
+                        <strong><%= issue.title %></strong>
+                      </div>
+
+                      <a class="issue-link" href={local_issue_detail_href(issue)}>
+                        JSON details
+                      </a>
+                    </div>
+                  </div>
+
+                  <div class="tracker-detail-highlights">
+                    <article class="tracker-mini-stat">
+                      <span>Files</span>
+                      <strong><%= local_issue_attachment_count(issue.attachments) %></strong>
+                    </article>
+
+                    <article class="tracker-mini-stat">
+                      <span>Blockers</span>
+                      <strong><%= local_issue_blocker_count(issue.blocked_by) %></strong>
+                    </article>
+
+                    <article class="tracker-mini-stat">
+                      <span>Lease</span>
+                      <strong><%= local_issue_lease_status(issue) %></strong>
+                    </article>
+
+                    <article class="tracker-mini-stat">
+                      <span>Worker</span>
+                      <strong><%= local_issue_worker_short_label(issue.assigned_to_worker) %></strong>
+                    </article>
                   </div>
 
                   <div class="tracker-pill-row">
@@ -552,19 +672,68 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <p class="empty-state">No files uploaded for this issue yet.</p>
                     <% else %>
                       <div class="tracker-attachment-list">
-                        <article :for={attachment <- issue.attachments} class="tracker-attachment-item">
+                        <article
+                          :for={attachment <- issue.attachments}
+                          class={local_issue_attachment_row_class(attachment, @selected_local_attachment_id)}
+                        >
                           <div class="tracker-attachment-copy">
                             <strong><%= attachment.filename %></strong>
                             <span class="muted">
                               <%= local_issue_attachment_meta(attachment) %>
                             </span>
+                            <span class="tracker-attachment-kind">
+                              <%= local_issue_attachment_preview_label(attachment.preview_kind) %>
+                            </span>
                           </div>
 
-                          <a class="secondary tracker-attachment-link" href={attachment.download_path}>
-                            Download
-                          </a>
+                          <div class="tracker-attachment-actions">
+                            <button
+                              :if={attachment.previewable?}
+                              type="button"
+                              class="secondary"
+                              phx-click="select_local_attachment"
+                              phx-value-issue_ref={issue.id}
+                              phx-value-attachment_id={attachment.id}
+                            >
+                              Preview
+                            </button>
+                            <a class="secondary tracker-attachment-link" href={attachment.download_path}>
+                              Download
+                            </a>
+                          </div>
                         </article>
                       </div>
+
+                      <%= if selected_attachment && selected_attachment.previewable? do %>
+                        <div class="attachment-preview-panel">
+                          <div class="attachment-preview-header">
+                            <div>
+                              <p class="metric-label">Attachment Preview</p>
+                              <p class="attachment-preview-copy">
+                                <%= selected_attachment.filename %> · <%= local_issue_attachment_preview_label(selected_attachment.preview_kind) %>
+                              </p>
+                            </div>
+                          </div>
+
+                          <%= if selected_attachment.preview_kind == :image do %>
+                            <img
+                              class="attachment-preview-image"
+                              src={selected_attachment.preview_path}
+                              alt={selected_attachment.filename}
+                            />
+                          <% else %>
+                            <iframe
+                              class={attachment_preview_frame_class(selected_attachment.preview_kind)}
+                              src={selected_attachment.preview_path}
+                              title={selected_attachment.filename}
+                            ></iframe>
+                          <% end %>
+                        </div>
+                      <% else %>
+                        <p class="empty-state attachment-preview-empty">
+                          Preview is available for text, image, and PDF files.
+                        </p>
+                      <% end %>
                     <% end %>
                   </div>
 
@@ -609,98 +778,243 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </div>
 
                   <div :if={issue.description} class="code-panel">
+                    <p class="metric-label">Scope</p>
                     <pre><%= issue.description %></pre>
                   </div>
                 <% else %>
                   <p class="empty-state">Select an issue to inspect its local tracker details.</p>
                 <% end %>
-              </article>
+                </article>
+              </div>
+            </section>
 
-              <form id="local-issue-create-form" class="tracker-create-form" phx-submit="create_local_issue">
-                <div class="field-stack">
-                  <label for="local-issue-title">Title</label>
-                  <input id="local-issue-title" type="text" name="issue[title]" required />
+            <section class="tracker-stage tracker-stage-search">
+              <div class="tracker-stage-header">
+                <div>
+                  <p class="eyebrow">Search and routing</p>
+                  <h3 class="tracker-stage-title">Search, board view, and issue movement</h3>
+                  <p class="tracker-stage-copy">
+                    Search the queue, switch lanes, and move issues through the local tracker once the agent studio is in motion.
+                  </p>
                 </div>
 
-                <div class="field-row">
-                  <div class="field-stack">
-                    <label for="local-issue-state">State</label>
-                    <select id="local-issue-state" name="issue[state]">
-                      <option :for={state <- @local_issue_states} value={state}>
-                        <%= state %>
-                      </option>
-                    </select>
+                <div class="tracker-stage-meta">
+                  <span class="metric-detail">
+                    Showing <%= length(filtered_local_issues) %> of <%= length(@local_tracker.issues) %> issues
+                  </span>
+                </div>
+              </div>
+
+              <%= if @local_tracker.issues != [] do %>
+                <div class="tracker-toolbar">
+                  <form id="local-issue-filters" class="tracker-filter-bar" phx-change="filter_local_issues">
+                    <div class="field-stack">
+                      <label for="local-filter-query">Search</label>
+                      <input
+                        id="local-filter-query"
+                        type="text"
+                        name="filters[query]"
+                        value={@local_issue_filters.query}
+                        placeholder="Identifier, title, description"
+                      />
+                    </div>
+
+                    <div class="field-stack">
+                      <label for="local-filter-state">State</label>
+                      <select id="local-filter-state" name="filters[state]">
+                        <option value="all" selected={@local_issue_filters.state == "all"}>All states</option>
+                        <option :for={state <- @local_issue_states} value={state} selected={@local_issue_filters.state == state}>
+                          <%= state %>
+                        </option>
+                      </select>
+                    </div>
+
+                    <div class="field-stack">
+                      <label for="local-filter-runtime">Runtime</label>
+                      <select id="local-filter-runtime" name="filters[runtime]">
+                        <option value="all" selected={@local_issue_filters.runtime == "all"}>All runtime</option>
+                        <option value="running" selected={@local_issue_filters.runtime == "running"}>Running</option>
+                        <option value="retrying" selected={@local_issue_filters.runtime == "retrying"}>Retrying</option>
+                        <option value="idle" selected={@local_issue_filters.runtime == "idle"}>Idle</option>
+                      </select>
+                    </div>
+
+                    <div class="field-stack">
+                      <label for="local-filter-label">Label</label>
+                      <input
+                        id="local-filter-label"
+                        type="text"
+                        name="filters[label]"
+                        value={@local_issue_filters.label}
+                        placeholder="migration"
+                      />
+                    </div>
+                  </form>
+
+                  <div class="tracker-toolbar-meta">
+                    <p class="metric-detail">Route the queue by view mode or live runtime state.</p>
+
+                    <div class="tracker-view-toggle">
+                      <button
+                        type="button"
+                        class={tracker_view_button_class(@local_issue_view_mode, "list")}
+                        phx-click="set_local_issue_view"
+                        phx-value-mode="list"
+                      >
+                        List
+                      </button>
+                      <button
+                        type="button"
+                        class={tracker_view_button_class(@local_issue_view_mode, "board")}
+                        phx-click="set_local_issue_view"
+                        phx-value-mode="board"
+                      >
+                        Board
+                      </button>
+                    </div>
                   </div>
+                </div>
+              <% end %>
 
-                  <div class="field-stack">
-                    <label for="local-issue-priority">Priority</label>
-                    <input
-                      id="local-issue-priority"
-                      type="number"
-                      min="0"
-                      step="1"
-                      name="issue[priority]"
-                      placeholder="1"
-                    />
+              <%= cond do %>
+                <% @local_tracker.issues == [] -> %>
+                  <p class="empty-state">No local issues yet. Create one to start a new run.</p>
+                <% filtered_local_issues == [] -> %>
+                  <p class="empty-state">No local issues match the active filters.</p>
+                <% @local_issue_view_mode == "board" -> %>
+                  <div class="tracker-board">
+                    <section :for={column <- board_columns} class="tracker-board-column">
+                      <div class="tracker-board-column-header">
+                        <span class={state_badge_class(column.state)}><%= column.state %></span>
+                        <span class="muted"><%= length(column.issues) %></span>
+                      </div>
+
+                      <div class="tracker-board-stack">
+                        <article
+                          :for={issue <- column.issues}
+                          class={local_issue_board_card_class(issue, @selected_local_issue_ref)}
+                        >
+                          <div class="tracker-board-card-top">
+                            <div class="issue-stack">
+                              <span class="issue-id"><%= issue.identifier %></span>
+                              <strong><%= issue.title %></strong>
+                              <span :if={issue.description} class="muted"><%= issue.description %></span>
+                            </div>
+                            <span class={local_issue_runtime_badge_class(issue, @payload)}>
+                              <%= local_issue_runtime_badge(issue, @payload) %>
+                            </span>
+                          </div>
+
+                          <div class="tracker-board-meta">
+                            <span>Priority <%= local_issue_priority(issue.priority) %></span>
+                            <span><%= local_issue_labels(issue.labels) %></span>
+                            <span><%= local_issue_attachment_count(issue.attachments) %> files</span>
+                          </div>
+
+                          <div class="tracker-board-actions">
+                            <button
+                              type="button"
+                              class="secondary"
+                              phx-click="select_local_issue"
+                              phx-value-issue_ref={issue.id}
+                            >
+                              Focus
+                            </button>
+
+                            <form
+                              id={"local-issue-board-state-#{issue.id}"}
+                              class="issue-state-form issue-state-form-inline"
+                              phx-submit="update_local_issue_state"
+                            >
+                              <input type="hidden" name="issue_ref" value={issue.id} />
+                              <select name="state">
+                                <option
+                                  :for={state <- @local_issue_states}
+                                  selected={state == issue.state}
+                                  value={state}
+                                >
+                                  <%= state %>
+                                </option>
+                              </select>
+                              <button type="submit" class="secondary">Set</button>
+                            </form>
+                          </div>
+                        </article>
+                      </div>
+                    </section>
                   </div>
-                </div>
-
-                <div class="field-stack">
-                  <label for="local-issue-labels">Labels</label>
-                  <input
-                    id="local-issue-labels"
-                    type="text"
-                    name="issue[labels]"
-                    placeholder="go, migration, local"
-                  />
-                </div>
-
-                <div class="field-stack">
-                  <label for="local-issue-description">Description</label>
-                  <textarea
-                    id="local-issue-description"
-                    name="issue[description]"
-                    rows="5"
-                    placeholder="Describe the scope, acceptance checks, and any blockers."
-                  ></textarea>
-                </div>
-
-                <div class="field-stack">
-                  <label for="local-issue-files">Issue Files</label>
-                  <div class="upload-panel" phx-drop-target={@uploads.issue_files.ref}>
-                    <.live_file_input id="local-issue-files" upload={@uploads.issue_files} />
-                    <p class="upload-copy">
-                      Upload specs, screenshots, or implementation notes directly into the local tracker.
-                    </p>
-                    <p class="upload-hint">
-                      Up to <%= issue_upload_max_entries() %> files, <%= format_bytes(issue_upload_max_file_size()) %> each.
-                    </p>
+                <% true -> %>
+                  <div class="table-wrap">
+                    <table class="data-table" style="min-width: 920px;">
+                      <thead>
+                        <tr>
+                          <th>Issue</th>
+                          <th>Runtime</th>
+                          <th>State</th>
+                          <th>Priority</th>
+                          <th>Labels</th>
+                          <th>Updated</th>
+                          <th>Focus</th>
+                          <th>Move</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr :for={issue <- filtered_local_issues} class={local_issue_row_class(issue, @selected_local_issue_ref)}>
+                          <td>
+                            <div class="issue-stack">
+                              <span class="issue-id"><%= issue.identifier %></span>
+                              <span><%= issue.title %></span>
+                              <span :if={issue.description} class="muted"><%= issue.description %></span>
+                            </div>
+                          </td>
+                          <td>
+                            <span class={local_issue_runtime_badge_class(issue, @payload)}>
+                              <%= local_issue_runtime_badge(issue, @payload) %>
+                            </span>
+                          </td>
+                          <td>
+                            <span class={state_badge_class(issue.state)}>
+                              <%= issue.state %>
+                            </span>
+                          </td>
+                          <td class="numeric"><%= local_issue_priority(issue.priority) %></td>
+                          <td><%= local_issue_labels(issue.labels) %></td>
+                          <td class="mono"><%= issue.updated_at || "n/a" %></td>
+                          <td>
+                            <button
+                              type="button"
+                              class="secondary tracker-focus-button"
+                              phx-click="select_local_issue"
+                              phx-value-issue_ref={issue.id}
+                            >
+                              Focus
+                            </button>
+                          </td>
+                          <td>
+                            <form
+                              id={"local-issue-state-#{issue.id}"}
+                              class="issue-state-form"
+                              phx-submit="update_local_issue_state"
+                            >
+                              <input type="hidden" name="issue_ref" value={issue.id} />
+                              <select name="state">
+                                <option
+                                  :for={state <- @local_issue_states}
+                                  selected={state == issue.state}
+                                  value={state}
+                                >
+                                  <%= state %>
+                                </option>
+                              </select>
+                              <button type="submit" class="secondary">Set</button>
+                            </form>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
                   </div>
-
-                  <%= for err <- upload_errors(@uploads.issue_files) do %>
-                    <p class="tracker-feedback tracker-feedback-error"><%= upload_error_message(err) %></p>
-                  <% end %>
-
-                  <div :if={@uploads.issue_files.entries != []} class="upload-entry-list">
-                    <%= for entry <- @uploads.issue_files.entries do %>
-                      <article class="upload-entry">
-                        <div class="tracker-attachment-copy">
-                          <strong><%= entry.client_name %></strong>
-                          <span class="muted"><%= format_bytes(entry.client_size) %></span>
-                        </div>
-                        <span class="muted"><%= entry.progress %>%</span>
-                      </article>
-
-                      <%= for err <- upload_errors(@uploads.issue_files, entry) do %>
-                        <p class="tracker-feedback tracker-feedback-error"><%= upload_error_message(err) %></p>
-                      <% end %>
-                    <% end %>
-                  </div>
-                </div>
-
-                <button type="submit">Create issue</button>
-              </form>
-            </div>
+              <% end %>
+            </section>
           </div>
         </section>
       <% end %>
@@ -721,7 +1035,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp issue_upload_max_entries, do: @issue_upload_max_entries
-  defp issue_upload_max_file_size, do: @issue_upload_max_file_size
+  defp issue_upload_max_file_size, do: Local.attachment_max_file_size()
 
   defp completed_runtime_seconds(payload) do
     payload.codex_totals.seconds_running || 0
@@ -787,13 +1101,21 @@ defmodule SymphonyElixirWeb.DashboardLive do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
   end
 
-  defp refresh_local_tracker(socket, selected_ref \\ nil) do
+  defp refresh_local_tracker(socket, selected_ref \\ nil, selected_attachment_id \\ nil) do
     tracker = load_local_tracker()
     selected_ref = resolve_selected_local_issue_ref(tracker, selected_ref || socket.assigns[:selected_local_issue_ref])
+
+    selected_attachment_id =
+      resolve_selected_local_attachment_id(
+        tracker,
+        selected_ref,
+        selected_attachment_id || socket.assigns[:selected_local_attachment_id]
+      )
 
     socket
     |> assign(:local_tracker, tracker)
     |> assign(:selected_local_issue_ref, selected_ref)
+    |> assign(:selected_local_attachment_id, selected_attachment_id)
   end
 
   defp load_local_tracker do
@@ -871,12 +1193,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp parse_optional_integer(_value), do: nil
 
   defp local_issue_attachment_payload(attachment, issue) when is_map(attachment) do
+    preview_kind = Local.attachment_preview_kind(attachment)
+
     %{
       id: attachment["id"],
       filename: attachment["filename"] || "attachment",
       content_type: attachment["content_type"],
       byte_size: attachment["byte_size"],
       uploaded_at: attachment["uploaded_at"],
+      preview_kind: preview_kind,
+      previewable?: preview_kind in [:text, :image, :pdf],
+      preview_path: local_issue_attachment_preview_path(issue, attachment),
       download_path: local_issue_attachment_download_path(issue, attachment)
     }
   end
@@ -887,6 +1214,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     if is_binary(issue_ref) and is_binary(attachment_id) do
       "/api/v1/local-issues/#{URI.encode(issue_ref)}/attachments/#{URI.encode(attachment_id)}"
+    end
+  end
+
+  defp local_issue_attachment_preview_path(issue, attachment) do
+    issue_ref = issue.id || issue.identifier
+    attachment_id = attachment["id"]
+
+    if is_binary(issue_ref) and is_binary(attachment_id) do
+      "/api/v1/local-issues/#{URI.encode(issue_ref)}/attachments/#{URI.encode(attachment_id)}/preview"
     end
   end
 
@@ -904,6 +1240,25 @@ defmodule SymphonyElixirWeb.DashboardLive do
     |> Enum.join(" · ")
   end
 
+  defp local_issue_attachment_preview_label(:text), do: "inline text preview"
+  defp local_issue_attachment_preview_label(:image), do: "image preview"
+  defp local_issue_attachment_preview_label(:pdf), do: "pdf preview"
+  defp local_issue_attachment_preview_label(_kind), do: "download only"
+
+  defp local_issue_attachment_count(attachments) when is_list(attachments), do: length(attachments)
+  defp local_issue_attachment_count(_attachments), do: 0
+
+  defp local_issue_blocker_count(blocked_by) when is_list(blocked_by), do: length(blocked_by)
+  defp local_issue_blocker_count(_blocked_by), do: 0
+
+  defp local_issue_lease_status(issue) do
+    cond do
+      is_binary(issue.claimed_by) and is_binary(issue.lease_expires_at) -> "claimed"
+      is_binary(issue.claimed_by) -> "held"
+      true -> "open"
+    end
+  end
+
   defp format_bytes(value) when is_integer(value) and value >= 1_000_000_000,
     do: :io_lib.format("~.1f GB", [value / 1_000_000_000]) |> IO.iodata_to_binary()
 
@@ -918,12 +1273,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp upload_error_message(:too_large), do: "One of the selected files exceeds the upload limit."
   defp upload_error_message(:too_many_files), do: "Too many files selected for a single issue."
-  defp upload_error_message(:not_accepted), do: "A selected file type is not accepted."
+
+  defp upload_error_message(:not_accepted),
+    do: "A selected file type is not accepted. Use only the supported local tracker formats."
 
   defp upload_error_message(:external_client_failure),
     do: "The browser failed to finish uploading one of the selected files."
 
   defp upload_error_message(other), do: "Upload failed: #{inspect(other)}"
+
+  defp local_issue_attachment_accept_summary do
+    Local.attachment_allowed_extensions()
+    |> Enum.join(", ")
+  end
 
   defp created_issue_feedback(issue, []) do
     "Created #{issue.identifier}"
@@ -978,6 +1340,26 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp nil_or_empty?(value), do: value in [nil, ""]
 
+  defp default_local_issue_filters do
+    %{query: "", state: "all", runtime: "all", label: ""}
+  end
+
+  defp normalize_local_issue_filters(filters) when is_map(filters) do
+    defaults = default_local_issue_filters()
+
+    %{
+      query: Map.get(filters, "query", defaults.query) |> to_string() |> String.trim(),
+      state: Map.get(filters, "state", defaults.state) |> to_string() |> String.trim() |> blank_to(defaults.state),
+      runtime: Map.get(filters, "runtime", defaults.runtime) |> to_string() |> String.trim() |> blank_to(defaults.runtime),
+      label: Map.get(filters, "label", defaults.label) |> to_string() |> String.trim()
+    }
+  end
+
+  defp normalize_local_issue_filters(_filters), do: default_local_issue_filters()
+
+  defp normalize_local_issue_view_mode("board"), do: "board"
+  defp normalize_local_issue_view_mode(_mode), do: "list"
+
   defp local_issue_states do
     (["Backlog"] ++ Config.linear_active_states() ++ Config.linear_terminal_states())
     |> Enum.map(&to_string/1)
@@ -1008,8 +1390,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp local_issue_worker_label(false), do: "manual only"
   defp local_issue_worker_label(_value), do: "worker enabled"
 
+  defp local_issue_worker_short_label(false), do: "manual"
+  defp local_issue_worker_short_label(_value), do: "enabled"
+
   defp local_issue_blocked_by([]), do: "none"
   defp local_issue_blocked_by(values), do: Enum.join(values, ", ")
+
+  defp filtered_local_issues(tracker, filters, payload) do
+    Enum.filter(tracker.issues, fn issue ->
+      local_issue_matches_query?(issue, filters.query) and
+        local_issue_matches_state?(issue, filters.state) and
+        local_issue_matches_runtime?(issue, filters.runtime, payload) and
+        local_issue_matches_label?(issue, filters.label)
+    end)
+  end
 
   defp local_issue_count(tracker, states) when is_list(states) do
     wanted =
@@ -1046,6 +1440,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp selected_local_issue(tracker, ref) do
     Enum.find(tracker.issues, &(&1.id == ref))
+  end
+
+  defp selected_local_attachment(issue, attachment_id) when is_map(issue) and is_binary(attachment_id) do
+    Enum.find(issue.attachments, &(&1.id == attachment_id))
+  end
+
+  defp selected_local_attachment(issue, _attachment_id) when is_map(issue) do
+    Enum.find(issue.attachments, & &1.previewable?) || List.first(issue.attachments)
   end
 
   defp local_tracker_capacity_value(payload) do
@@ -1087,6 +1489,28 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
       true ->
         nil
+    end
+  end
+
+  defp resolve_selected_local_attachment_id(%{issues: issues}, selected_ref, current_attachment_id) do
+    case Enum.find(issues, &(&1.id == selected_ref)) do
+      nil ->
+        nil
+
+      issue ->
+        cond do
+          is_binary(current_attachment_id) and Enum.any?(issue.attachments, &(&1.id == current_attachment_id)) ->
+            current_attachment_id
+
+          attachment = Enum.find(issue.attachments, & &1.previewable?) ->
+            attachment.id
+
+          attachment = List.first(issue.attachments) ->
+            attachment.id
+
+          true ->
+            nil
+        end
     end
   end
 
@@ -1155,6 +1579,24 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp local_issue_row_class(_issue, _selected_ref), do: nil
 
+  defp local_issue_board_card_class(issue, selected_ref) do
+    base = "tracker-board-card"
+
+    if issue.id == selected_ref, do: "#{base} issue-row-selected", else: base
+  end
+
+  defp local_issue_attachment_row_class(attachment, selected_attachment_id) do
+    base = "tracker-attachment-item"
+
+    if attachment.id == selected_attachment_id, do: "#{base} tracker-attachment-item-selected", else: base
+  end
+
+  defp attachment_preview_frame_class(:text), do: "attachment-preview-frame attachment-preview-frame-text"
+  defp attachment_preview_frame_class(_kind), do: "attachment-preview-frame"
+
+  defp tracker_view_button_class(mode, mode), do: "secondary tracker-view-button tracker-view-button-active"
+  defp tracker_view_button_class(_current, _mode), do: "secondary tracker-view-button"
+
   defp sort_local_issues(issues) do
     Enum.sort_by(issues, fn issue ->
       {
@@ -1177,10 +1619,47 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  defp local_issue_board_columns(issues, states) do
+    grouped =
+      Enum.group_by(issues, &normalize_issue_state(&1.state))
+
+    configured_states =
+      states
+      |> Enum.map(&to_string/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+
+    discovered_states =
+      issues
+      |> Enum.map(& &1.state)
+      |> Enum.reject(&(is_nil(&1) or to_string(&1) in configured_states))
+
+    ordered_states =
+      configured_states
+      |> Kernel.++(discovered_states)
+      |> Enum.uniq()
+
+    ordered_states
+    |> Enum.map(fn state ->
+      %{state: state, issues: Map.get(grouped, normalize_issue_state(state), [])}
+    end)
+    |> Enum.reject(&(&1.issues == []))
+  end
+
   defp tracker_feedback_class(:error), do: "tracker-feedback tracker-feedback-error"
   defp tracker_feedback_class(_kind), do: "tracker-feedback tracker-feedback-info"
 
   defp local_tracker_error_message(prefix, :issue_not_found), do: "#{prefix}: issue not found"
+
+  defp local_tracker_error_message(prefix, {:unsupported_attachment_type, filename}),
+    do: "#{prefix}: unsupported attachment format for #{filename}"
+
+  defp local_tracker_error_message(prefix, {:attachment_too_large, _size, max_size}),
+    do: "#{prefix}: attachment exceeds #{format_bytes(max_size)}"
+
+  defp local_tracker_error_message(prefix, :invalid_attachment_text_encoding),
+    do: "#{prefix}: text attachments must be valid UTF-8"
+
   defp local_tracker_error_message(prefix, reason), do: "#{prefix}: #{inspect(reason)}"
 
   defp normalize_issue_state(state) when is_binary(state) do
@@ -1190,6 +1669,47 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp normalize_issue_state(state), do: state |> to_string() |> normalize_issue_state()
+
+  defp local_issue_matches_query?(_issue, ""), do: true
+
+  defp local_issue_matches_query?(issue, query) when is_binary(query) do
+    haystack =
+      [issue.identifier, issue.title, issue.description, Enum.join(issue.labels || [], " ")]
+      |> Enum.reject(&nil_or_empty?/1)
+      |> Enum.join(" ")
+      |> String.downcase()
+
+    String.contains?(haystack, String.downcase(query))
+  end
+
+  defp local_issue_matches_state?(_issue, "all"), do: true
+
+  defp local_issue_matches_state?(issue, state) do
+    normalize_issue_state(issue.state) == normalize_issue_state(state)
+  end
+
+  defp local_issue_matches_runtime?(_issue, "all", _payload), do: true
+  defp local_issue_matches_runtime?(issue, "running", payload), do: local_issue_running?(issue, payload)
+  defp local_issue_matches_runtime?(issue, "retrying", payload), do: local_issue_retrying?(issue, payload)
+
+  defp local_issue_matches_runtime?(issue, "idle", payload) do
+    not local_issue_running?(issue, payload) and not local_issue_retrying?(issue, payload)
+  end
+
+  defp local_issue_matches_runtime?(_issue, _runtime, _payload), do: true
+
+  defp local_issue_matches_label?(_issue, ""), do: true
+
+  defp local_issue_matches_label?(issue, label) do
+    normalized_label = String.downcase(label)
+
+    Enum.any?(issue.labels || [], fn issue_label ->
+      String.contains?(String.downcase(issue_label), normalized_label)
+    end)
+  end
+
+  defp blank_to("", fallback), do: fallback
+  defp blank_to(value, _fallback), do: value
 
   defp pretty_value(nil), do: "n/a"
   defp pretty_value(value), do: inspect(value, pretty: true, limit: :infinity)

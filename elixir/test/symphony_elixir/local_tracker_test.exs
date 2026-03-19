@@ -145,9 +145,9 @@ defmodule SymphonyElixir.LocalTrackerTest do
     )
 
     File.write!(tracker_path, Jason.encode!(%{"issues" => []}, pretty: true))
-    File.write!(upload_source, "# local scope\n\nmove attachments into the tracker\n")
+    File.write!(upload_source, "# local scope\r\n\r\nmove attachments into the tracker\r\n")
 
-    assert {:ok, attachment} = Local.store_attachment(upload_source, "../scope-notes.md", "text/markdown")
+    assert {:ok, attachment} = Local.store_attachment(upload_source, "../scope-notes.md")
     assert attachment["filename"] == "scope-notes.md"
     assert attachment["content_type"] == "text/markdown"
     assert is_integer(attachment["byte_size"])
@@ -165,10 +165,12 @@ defmodule SymphonyElixir.LocalTrackerTest do
             %{
               path: attachment_path,
               filename: "scope-notes.md",
-              content_type: "text/markdown"
+              content_type: "text/markdown",
+              preview_kind: :text
             }} = Local.fetch_attachment_file("LOCAL-1", stored_attachment["id"])
 
-    assert File.read!(attachment_path) =~ "move attachments into the tracker"
+    assert File.read!(attachment_path) == "# local scope\n\nmove attachments into the tracker\n"
+    assert Local.attachment_preview_kind(stored_attachment) == :text
 
     {:ok, payload} = File.read(tracker_path)
     decoded = Jason.decode!(payload)
@@ -240,13 +242,22 @@ defmodule SymphonyElixir.LocalTrackerTest do
     File.write!(upload_source, "attachment cleanup")
 
     assert {:ok, attachment_without_type} = Local.store_attachment(upload_source, "two-arity.txt")
-    assert attachment_without_type["content_type"] == nil
+    assert attachment_without_type["content_type"] == "text/plain"
     assert :ok = Local.discard_attachment(attachment_without_type)
 
     assert {:ok, cleanup_attachment} = Local.store_attachment(upload_source, "   ", "   ")
-    assert cleanup_attachment["filename"] == "attachment"
-    assert cleanup_attachment["content_type"] == nil
+    assert cleanup_attachment["filename"] == "attachment.txt"
+    assert cleanup_attachment["content_type"] == "text/plain"
     assert :ok = Local.discard_attachment(cleanup_attachment)
+
+    assert {:error, {:unsupported_attachment_type, "script.py"}} =
+             Local.store_attachment(upload_source, "script.py", "text/x-python")
+
+    invalid_text_source = Path.join(tracker_dir, "broken.txt")
+    File.write!(invalid_text_source, <<255, 254, 0>>)
+
+    assert {:error, :invalid_attachment_text_encoding} =
+             Local.store_attachment(invalid_text_source, "broken.txt", "text/plain")
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "local",
@@ -334,6 +345,147 @@ defmodule SymphonyElixir.LocalTrackerTest do
 
     assert {:error, :invalid_attachment_path} =
              Local.fetch_attachment_file("LOCAL-ESCAPE-1", "attachment-escape")
+  end
+
+  test "local tracker infers attachment extensions and preview kinds from content types" do
+    tracker_dir = Path.dirname(Workflow.workflow_file_path())
+    tracker_path = Path.join(tracker_dir, "issues.json")
+    upload_source = Path.join(tracker_dir, "upload-without-extension")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: tracker_path,
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    File.write!(tracker_path, Jason.encode!(%{"issues" => []}, pretty: true))
+    File.write!(upload_source, "%PDF-1.7\nfake fixture\n")
+
+    assert {:ok, blank_filename_attachment} =
+             Local.store_attachment(upload_source, "   ", "application/pdf")
+
+    assert blank_filename_attachment["filename"] == "attachment.pdf"
+    assert blank_filename_attachment["content_type"] == "application/pdf"
+    assert :ok = Local.discard_attachment(blank_filename_attachment)
+
+    assert {:ok, inferred_extension_attachment} =
+             Local.store_attachment(upload_source, "report", "application/pdf")
+
+    assert inferred_extension_attachment["filename"] == "report.pdf"
+    assert inferred_extension_attachment["content_type"] == "application/pdf"
+    assert :ok = Local.discard_attachment(inferred_extension_attachment)
+
+    assert Local.attachment_preview_kind(%{"filename" => nil, "content_type" => "text/plain"}) ==
+             :text
+
+    assert Local.attachment_preview_kind(%{"filename" => nil, "content_type" => "image/png"}) ==
+             :image
+
+    assert Local.attachment_preview_kind(%{"filename" => nil, "content_type" => "application/pdf"}) ==
+             :pdf
+
+    assert Local.attachment_preview_kind(%{
+             "filename" => nil,
+             "content_type" => "application/octet-stream"
+           }) == :download
+
+    assert Local.attachment_preview_kind(%{"filename" => nil, "content_type" => nil}) == :download
+  end
+
+  test "local tracker exposes attachment config and infers content type when metadata is blank" do
+    tracker_dir = Path.dirname(Workflow.workflow_file_path())
+    tracker_path = Path.join(tracker_dir, "issues.json")
+    attachment_root = Path.join(tracker_dir, "issues_attachments")
+    raw_attachment_path = Path.join(attachment_root, "stored/raw")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: tracker_path,
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    assert "application/pdf" in Local.attachment_upload_accepts()
+    assert ".md" in Local.attachment_allowed_extensions()
+    assert Local.attachment_max_file_size() == 20_000_000
+
+    File.mkdir_p!(Path.dirname(raw_attachment_path))
+    File.write!(raw_attachment_path, "raw attachment")
+
+    File.write!(
+      tracker_path,
+      Jason.encode!(
+        %{
+          "issues" => [
+            %{
+              "id" => "issue-raw-fetch-1",
+              "identifier" => "LOCAL-RAW-FETCH-1",
+              "title" => "Infer content type on fetch",
+              "state" => "Todo",
+              "attachments" => [
+                %{
+                  "id" => "attachment-raw-txt",
+                  "filename" => "raw",
+                  "content_type" => "   ",
+                  "path" => "stored/raw"
+                }
+              ]
+            }
+          ]
+        },
+        pretty: true
+      )
+    )
+
+    assert {:ok,
+            %{
+              path: ^raw_attachment_path,
+              filename: "raw",
+              content_type: nil,
+              preview_kind: :download
+            }} = Local.fetch_attachment_file("LOCAL-RAW-FETCH-1", "attachment-raw-txt")
+  end
+
+  test "local tracker surfaces attachment validation and filesystem failures" do
+    tracker_dir = Path.dirname(Workflow.workflow_file_path())
+    tracker_path = Path.join(tracker_dir, "issues.json")
+    text_source = Path.join(tracker_dir, "attachment-source.txt")
+    pdf_source = Path.join(tracker_dir, "attachment-source.pdf")
+    directory_source = Path.join(tracker_dir, "attachment-directory.txt")
+    oversized_source = Path.join(tracker_dir, "attachment-too-large.txt")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: tracker_path,
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    File.write!(tracker_path, Jason.encode!(%{"issues" => []}, pretty: true))
+    File.write!(text_source, "filesystem failure coverage")
+    File.write!(pdf_source, "%PDF-1.7\nfixture\n")
+    File.mkdir_p!(directory_source)
+
+    oversized_limit = Local.attachment_max_file_size()
+    oversized_size = oversized_limit + 1
+    File.write!(oversized_source, :binary.copy(<<0>>, oversized_size))
+
+    assert {:error, {:attachment_too_large, ^oversized_size, ^oversized_limit}} =
+             Local.store_attachment(oversized_source, "oversized.txt", "text/plain")
+
+    assert {:error, {:local_tracker_attachment_write_failed, :eisdir}} =
+             Local.store_attachment(directory_source, "directory.txt", "text/plain")
+
+    long_text_filename = String.duplicate("a", 260) <> ".txt"
+
+    assert {:error, {:local_tracker_attachment_write_failed, :enametoolong}} =
+             Local.store_attachment(text_source, long_text_filename, "text/plain")
+
+    long_pdf_filename = String.duplicate("b", 260) <> ".pdf"
+
+    assert {:error, {:local_tracker_attachment_write_failed, :enametoolong}} =
+             Local.store_attachment(pdf_source, long_pdf_filename, "application/pdf")
   end
 
   test "local tracker treats a missing file as an empty queue and surfaces invalid payloads" do

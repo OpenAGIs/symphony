@@ -13,6 +13,51 @@ defmodule SymphonyElixir.Tracker.Local do
   @default_identifier_prefix "LOCAL"
   @default_id_prefix "local"
   @default_attachment_id_prefix "attachment"
+  @attachment_max_file_size 20_000_000
+  @text_attachment_extensions ~w(.txt .md .markdown .json .yml .yaml .csv .log)
+  @image_attachment_extensions ~w(.png .jpg .jpeg .gif .webp)
+  @pdf_attachment_extensions ~w(.pdf)
+  @attachment_content_types %{
+    ".txt" => "text/plain",
+    ".md" => "text/markdown",
+    ".markdown" => "text/markdown",
+    ".json" => "application/json",
+    ".yml" => "application/yaml",
+    ".yaml" => "application/yaml",
+    ".csv" => "text/csv",
+    ".log" => "text/plain",
+    ".png" => "image/png",
+    ".jpg" => "image/jpeg",
+    ".jpeg" => "image/jpeg",
+    ".gif" => "image/gif",
+    ".webp" => "image/webp",
+    ".pdf" => "application/pdf"
+  }
+  @content_type_attachment_extensions %{
+    "text/plain" => ".txt",
+    "text/markdown" => ".md",
+    "application/json" => ".json",
+    "application/yaml" => ".yaml",
+    "text/yaml" => ".yaml",
+    "application/x-yaml" => ".yaml",
+    "text/csv" => ".csv",
+    "image/png" => ".png",
+    "image/jpeg" => ".jpg",
+    "image/gif" => ".gif",
+    "image/webp" => ".webp",
+    "application/pdf" => ".pdf"
+  }
+  @attachment_upload_accepts [
+    "text/plain",
+    ".md",
+    "application/json",
+    "text/csv",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "application/pdf"
+  ]
 
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
@@ -69,22 +114,62 @@ defmodule SymphonyElixir.Tracker.Local do
     end
   end
 
+  @spec attachment_upload_accepts() :: [String.t()]
+  def attachment_upload_accepts, do: @attachment_upload_accepts
+
+  @spec attachment_allowed_extensions() :: [String.t()]
+  def attachment_allowed_extensions do
+    Map.keys(@attachment_content_types)
+  end
+
+  @spec attachment_max_file_size() :: pos_integer()
+  def attachment_max_file_size, do: @attachment_max_file_size
+
+  @spec attachment_preview_kind(map()) :: :text | :image | :pdf | :download
+  def attachment_preview_kind(attachment) when is_map(attachment) do
+    attachment_preview_kind(
+      map_string(attachment, "filename"),
+      Map.get(attachment, "content_type")
+    )
+  end
+
+  @spec attachment_preview_kind(String.t() | nil, String.t() | nil) :: :text | :image | :pdf | :download
+  def attachment_preview_kind(filename, content_type) do
+    extension = attachment_extension(filename)
+    normalized_content_type = normalize_content_type(content_type)
+
+    cond do
+      extension in @text_attachment_extensions -> :text
+      extension in @image_attachment_extensions -> :image
+      extension in @pdf_attachment_extensions -> :pdf
+      text_content_type?(normalized_content_type) -> :text
+      image_content_type?(normalized_content_type) -> :image
+      normalized_content_type == "application/pdf" -> :pdf
+      true -> :download
+    end
+  end
+
   @spec store_attachment(String.t(), String.t(), String.t() | nil) :: {:ok, map()} | {:error, term()}
   def store_attachment(source_path, filename, content_type \\ nil)
       when is_binary(source_path) and is_binary(filename) do
     with {:ok, tracker_path} <- tracker_path(),
+         {:ok, %File.Stat{size: source_size}} <- source_attachment_stat(source_path),
+         :ok <- validate_attachment_size(source_size),
          {:ok, attachment_root} <- attachment_root(tracker_path),
          attachment_id <- generate_attachment_id(),
-         sanitized_filename <- sanitize_filename(filename),
+         sanitized_filename <- sanitize_filename(filename, source_path, content_type),
+         :ok <- validate_attachment_filename(sanitized_filename),
+         normalized_content_type <- attachment_content_type(sanitized_filename, content_type),
+         preview_kind <- attachment_preview_kind(sanitized_filename, normalized_content_type),
          target_path <- attachment_target_path(attachment_root, attachment_id, sanitized_filename),
          :ok <- File.mkdir_p(Path.dirname(target_path)),
-         :ok <- copy_attachment_file(source_path, target_path),
+         :ok <- persist_attachment_file(source_path, target_path, preview_kind),
          {:ok, %File.Stat{size: byte_size}} <- File.stat(target_path) do
       {:ok,
        %{
          "id" => attachment_id,
          "filename" => sanitized_filename,
-         "content_type" => normalize_content_type(content_type),
+         "content_type" => normalized_content_type,
          "byte_size" => byte_size,
          "path" => Path.relative_to(target_path, attachment_root),
          "uploaded_at" => now_iso8601()
@@ -114,12 +199,17 @@ defmodule SymphonyElixir.Tracker.Local do
          {:ok, attachment} <- find_attachment(issue_map, attachment_id),
          {:ok, attachment_path} <- resolve_attachment_path(tracker_path, attachment),
          :ok <- attachment_file_exists(attachment_path) do
+      content_type =
+        normalize_content_type(attachment["content_type"]) ||
+          attachment_content_type(attachment["filename"], nil)
+
       {:ok,
        %{
          attachment: attachment,
          path: attachment_path,
          filename: attachment["filename"],
-         content_type: normalize_content_type(attachment["content_type"])
+         content_type: content_type,
+         preview_kind: attachment_preview_kind(attachment["filename"], content_type)
        }}
     end
   end
@@ -497,10 +587,12 @@ defmodule SymphonyElixir.Tracker.Local do
   defp normalize_attachments(_value), do: []
 
   defp normalize_attachment(attachment) when is_map(attachment) do
+    filename = map_string(attachment, "filename")
+
     %{
       "id" => map_string(attachment, "id"),
-      "filename" => map_string(attachment, "filename"),
-      "content_type" => normalize_content_type(Map.get(attachment, "content_type")),
+      "filename" => filename,
+      "content_type" => normalize_content_type(Map.get(attachment, "content_type")) || inferred_content_type(filename),
       "byte_size" => parse_non_negative_integer(Map.get(attachment, "byte_size")),
       "path" => map_string(attachment, "path"),
       "uploaded_at" => map_string(attachment, "uploaded_at")
@@ -761,6 +853,66 @@ defmodule SymphonyElixir.Tracker.Local do
     Path.join([attachment_root, attachment_id, filename])
   end
 
+  defp source_attachment_stat(source_path) when is_binary(source_path) do
+    case File.stat(source_path) do
+      {:ok, %File.Stat{} = stat} -> {:ok, stat}
+      {:error, reason} -> {:error, {:local_tracker_attachment_write_failed, reason}}
+    end
+  end
+
+  defp validate_attachment_size(size)
+       when is_integer(size) and size <= @attachment_max_file_size,
+       do: :ok
+
+  defp validate_attachment_size(size) when is_integer(size) do
+    {:error, {:attachment_too_large, size, @attachment_max_file_size}}
+  end
+
+  defp validate_attachment_filename(filename) when is_binary(filename) do
+    if supported_attachment_extension?(filename) do
+      :ok
+    else
+      {:error, {:unsupported_attachment_type, filename}}
+    end
+  end
+
+  defp persist_attachment_file(source_path, target_path, :text) do
+    with {:ok, contents} <- read_attachment_source(source_path),
+         {:ok, normalized_contents} <- normalize_text_attachment_contents(contents) do
+      write_attachment_file(target_path, normalized_contents)
+    end
+  end
+
+  defp persist_attachment_file(source_path, target_path, _preview_kind) do
+    copy_attachment_file(source_path, target_path)
+  end
+
+  defp read_attachment_source(source_path) when is_binary(source_path) do
+    case File.read(source_path) do
+      {:ok, contents} -> {:ok, contents}
+      {:error, reason} -> {:error, {:local_tracker_attachment_write_failed, reason}}
+    end
+  end
+
+  defp normalize_text_attachment_contents(contents) when is_binary(contents) do
+    if String.valid?(contents) do
+      {:ok,
+       contents
+       |> String.replace("\r\n", "\n")
+       |> String.replace("\r", "\n")}
+    else
+      {:error, :invalid_attachment_text_encoding}
+    end
+  end
+
+  defp write_attachment_file(target_path, contents)
+       when is_binary(target_path) and is_binary(contents) do
+    case File.write(target_path, contents) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:local_tracker_attachment_write_failed, reason}}
+    end
+  end
+
   defp copy_attachment_file(source_path, target_path) do
     case File.cp(source_path, target_path) do
       :ok -> :ok
@@ -832,13 +984,28 @@ defmodule SymphonyElixir.Tracker.Local do
     "#{@default_attachment_id_prefix}-#{System.unique_integer([:positive])}"
   end
 
-  defp sanitize_filename(filename) when is_binary(filename) do
-    filename
-    |> Path.basename()
-    |> String.trim()
-    |> case do
-      "" -> "attachment"
-      basename -> basename
+  defp sanitize_filename(filename, source_path, content_type)
+       when is_binary(filename) and is_binary(source_path) do
+    basename =
+      filename
+      |> Path.basename()
+      |> String.trim()
+
+    inferred_extension =
+      attachment_extension(basename) ||
+        attachment_extension(source_path) ||
+        attachment_extension_from_content_type(content_type)
+
+    case basename do
+      "" ->
+        "attachment" <> (inferred_extension || "")
+
+      _basename ->
+        if is_nil(attachment_extension(basename)) and is_binary(inferred_extension) do
+          basename <> inferred_extension
+        else
+          basename
+        end
     end
   end
 
@@ -867,4 +1034,46 @@ defmodule SymphonyElixir.Tracker.Local do
   end
 
   defp normalize_state(_state), do: ""
+
+  defp attachment_content_type(filename, content_type) when is_binary(filename) do
+    inferred_content_type(filename) || normalize_content_type(content_type)
+  end
+
+  defp supported_attachment_extension?(filename) when is_binary(filename) do
+    filename
+    |> attachment_extension()
+    |> then(&(is_binary(&1) and Map.has_key?(@attachment_content_types, &1)))
+  end
+
+  defp inferred_content_type(filename) when is_binary(filename) do
+    Map.get(@attachment_content_types, attachment_extension(filename))
+  end
+
+  defp attachment_extension(filename) when is_binary(filename) do
+    case filename |> Path.extname() |> String.downcase() do
+      "" -> nil
+      extension -> extension
+    end
+  end
+
+  defp attachment_extension(_filename), do: nil
+
+  defp attachment_extension_from_content_type(content_type) do
+    content_type
+    |> normalize_content_type()
+    |> then(&Map.get(@content_type_attachment_extensions, &1))
+  end
+
+  defp text_content_type?(content_type) when is_binary(content_type) do
+    String.starts_with?(content_type, "text/") or
+      content_type in ["application/json", "application/yaml", "text/yaml", "application/x-yaml"]
+  end
+
+  defp text_content_type?(_content_type), do: false
+
+  defp image_content_type?(content_type) when is_binary(content_type) do
+    String.starts_with?(content_type, "image/")
+  end
+
+  defp image_content_type?(_content_type), do: false
 end

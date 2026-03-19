@@ -7,6 +7,117 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 > Symphony Elixir is prototype software intended for evaluation only and is presented as-is.
 > We recommend implementing your own hardened version based on `SPEC.md`.
 
+## Quick Start
+
+The easiest local setup is:
+
+1. Install dependencies.
+2. Edit `WORKFLOW.md`.
+3. Start Symphony.
+4. Open the dashboard at `http://127.0.0.1:4000/`.
+
+```bash
+git clone https://github.com/openai/symphony
+cd symphony/elixir
+mise trust
+mise install
+mise exec -- mix setup
+mise exec -- mix build
+mise exec -- ./bin/symphony ./WORKFLOW.md
+```
+
+The bundled local workflow already enables the browser dashboard by default at
+`http://127.0.0.1:4000/`.
+
+## Workflow First
+
+`WORKFLOW.md` is the main operator file. It has two parts:
+
+- YAML front matter for runtime configuration
+- Markdown body for the prompt sent to Codex on every issue turn
+
+These are the fields most teams edit first:
+
+- `tracker`
+  Choose `linear` or `local`.
+- `workspace.root`
+  Where Symphony creates per-issue workspaces.
+- `server.host` / `server.port`
+  Enables the dashboard and JSON API.
+- `hooks.after_create`
+  Bootstraps a fresh issue workspace before Codex runs.
+- `agent.max_concurrent_agents`
+  Controls how many issues Symphony can run in parallel.
+- `codex.command`
+  Defines how Codex app-server is launched.
+
+Minimal local example:
+
+```md
+---
+tracker:
+  kind: local
+  path: ./local-issues.json
+  active_states:
+    - Todo
+    - In Progress
+  terminal_states:
+    - Done
+    - Closed
+    - Cancelled
+    - Canceled
+    - Duplicate
+workspace:
+  root: ~/code/symphony-workspaces
+server:
+  host: 127.0.0.1
+  port: 4000
+agent:
+  max_concurrent_agents: 4
+  max_turns: 20
+codex:
+  command: codex app-server
+---
+
+You are working on a local tracker issue {{ issue.identifier }}.
+
+Title: {{ issue.title }}
+Body: {{ issue.description }}
+```
+
+Minimal Linear example:
+
+```md
+---
+tracker:
+  kind: linear
+  project_slug: "your-project-slug"
+workspace:
+  root: ~/code/symphony-workspaces
+agent:
+  max_concurrent_agents: 10
+codex:
+  command: codex app-server
+---
+
+You are working on a Linear issue {{ issue.identifier }}.
+
+Title: {{ issue.title }}
+Body: {{ issue.description }}
+```
+
+## Typical Local Flow
+
+1. Edit `WORKFLOW.md` so `tracker`, `workspace.root`, `server.port`, and
+   `codex.command` match your machine and repo.
+2. If you use the local tracker, create or update `local-issues.json`.
+3. Start Symphony with `./bin/symphony ./WORKFLOW.md`.
+4. Open `http://127.0.0.1:4000/` to watch running issues, retries, token usage,
+   and local issue state.
+5. Use `bin/symphony issue ...` or the dashboard to create issues, change
+   states, and add comments.
+6. Stop Symphony with `Ctrl-C` when you are done.
+
 ## Screenshot
 
 ![Symphony Elixir screenshot](../.github/media/elixir-screenshot.png)
@@ -58,21 +169,6 @@ mise install
 mise exec -- elixir --version
 ```
 
-## Run
-
-```bash
-git clone https://github.com/openai/symphony
-cd symphony/elixir
-mise trust
-mise install
-mise exec -- mix setup
-mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md
-```
-
-The bundled local workflow now also enables the browser dashboard by default at
-`http://127.0.0.1:4000/`.
-
 ## Configuration
 
 Pass a custom workflow file path to `./bin/symphony` when starting the service:
@@ -94,8 +190,8 @@ You can print the configured dashboard URL at any time with:
 ./bin/symphony panel
 ```
 
-The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
-Codex session prompt.
+The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown
+body used as the Codex session prompt.
 
 Minimal example:
 
