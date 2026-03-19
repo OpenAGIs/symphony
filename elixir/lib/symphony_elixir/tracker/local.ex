@@ -5,7 +5,7 @@ defmodule SymphonyElixir.Tracker.Local do
 
   @behaviour SymphonyElixir.Tracker
 
-  alias SymphonyElixir.{Config, Linear.Issue}
+  alias SymphonyElixir.{Config, Issue}
 
   @comments_key "comments"
   @issues_key "issues"

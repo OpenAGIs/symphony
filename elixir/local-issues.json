@@ -68,9 +68,9 @@
         "local"
       ],
       "priority": 2,
-      "state": "Todo",
+      "state": "Done",
       "title": "Rename the core issue model away from Linear.Issue",
-      "updated_at": "2026-03-18T18:25:06Z"
+      "updated_at": "2026-03-19T00:20:21Z"
     },
     {
       "assigned_to_worker": true,
@@ -84,9 +84,9 @@
         "runtime"
       ],
       "priority": 1,
-      "state": "Merging",
+      "state": "Done",
       "title": "Add tracker-backed issue leasing for distributed local runs",
-      "updated_at": "2026-03-19T02:48:00Z"
+      "updated_at": "2026-03-19T00:20:21Z"
     }
   ]
 }
