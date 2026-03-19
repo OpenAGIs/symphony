@@ -787,6 +787,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       workspace_root: nil,
       max_concurrent_agents: nil,
       codex_approval_policy: nil,
+      codex_execution_environment: nil,
       codex_thread_sandbox: nil,
       codex_turn_sandbox_policy: nil,
       codex_turn_timeout_ms: nil,
@@ -802,6 +803,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.workspace_root() == Path.join(System.tmp_dir!(), "symphony_workspaces")
     assert Config.max_concurrent_agents() == 10
     assert Config.codex_command() == "codex app-server"
+
+    assert Config.codex_execution_environment() == nil
 
     assert Config.codex_approval_policy() == %{
              "reject" => %{
@@ -842,6 +845,63 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              "type" => "workspaceWrite",
              "writableRoots" => ["/tmp/workspace", "/tmp/cache"]
            }
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_execution_environment: "docker",
+      codex_thread_sandbox: nil,
+      codex_turn_sandbox_policy: nil
+    )
+
+    assert Config.codex_execution_environment() == "docker"
+    assert Config.codex_thread_sandbox() == "workspace-write"
+
+    assert Config.codex_turn_sandbox_policy() == %{
+             "type" => "workspaceWrite",
+             "writableRoots" => [Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))],
+             "readOnlyAccess" => %{"type" => "fullAccess"},
+             "networkAccess" => false,
+             "excludeTmpdirEnvVar" => false,
+             "excludeSlashTmp" => false
+           }
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_execution_environment: "vm",
+      codex_thread_sandbox: nil,
+      codex_turn_sandbox_policy: nil
+    )
+
+    assert Config.codex_execution_environment() == "vm"
+    assert Config.codex_thread_sandbox() == "workspace-write"
+
+    assert Config.codex_turn_sandbox_policy() == %{
+             "type" => "externalSandbox",
+             "networkAccess" => "restricted"
+           }
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_execution_environment: "browser",
+      codex_thread_sandbox: nil,
+      codex_turn_sandbox_policy: nil
+    )
+
+    assert Config.codex_execution_environment() == "browser"
+    assert Config.codex_thread_sandbox() == "read-only"
+
+    assert Config.codex_turn_sandbox_policy() == %{
+             "type" => "readOnly",
+             "access" => %{"type" => "fullAccess"},
+             "networkAccess" => false
+           }
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_execution_environment: "local_os",
+      codex_thread_sandbox: nil,
+      codex_turn_sandbox_policy: nil
+    )
+
+    assert Config.codex_execution_environment() == "local_os"
+    assert Config.codex_thread_sandbox() == "danger-full-access"
+    assert Config.codex_turn_sandbox_policy() == %{"type" => "dangerFullAccess"}
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: ",")
     assert Config.linear_active_states() == ["Todo", "In Progress"]
@@ -902,7 +962,16 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.server_port() == nil
     assert Config.server_host() == "123"
 
-    write_workflow_file!(Workflow.workflow_file_path(), codex_approval_policy: "")
+    write_workflow_file!(Workflow.workflow_file_path(), codex_execution_environment: "")
+    assert Config.codex_execution_environment() == nil
+    assert {:error, {:invalid_codex_execution_environment, ""}} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_execution_environment: "podman")
+
+    assert {:error, {:invalid_codex_execution_environment, {:unsupported_value, "podman", ["docker", "vm", "browser", "local_os"]}}} =
+             Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_execution_environment: "docker", codex_approval_policy: "")
 
     assert Config.codex_approval_policy() == %{
              "reject" => %{
@@ -949,6 +1018,16 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              "nested" => %{"flag" => true}
            }
 
+    assert :ok = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_execution_environment: "browser",
+      codex_thread_sandbox: "workspace-write",
+      codex_turn_sandbox_policy: %{type: "workspaceWrite", writableRoots: ["/tmp/override"]}
+    )
+
+    assert Config.codex_thread_sandbox() == "workspace-write"
+    assert Config.codex_turn_sandbox_policy() == %{"type" => "workspaceWrite", "writableRoots" => ["/tmp/override"]}
     assert :ok = Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server")

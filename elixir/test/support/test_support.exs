@@ -103,6 +103,7 @@ defmodule SymphonyElixir.TestSupport do
           max_concurrent_agents_by_risk: %{},
           max_concurrent_agents_by_budget: %{},
           codex_command: "codex app-server",
+          codex_execution_environment: nil,
           codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           codex_thread_sandbox: "workspace-write",
           codex_turn_sandbox_policy: nil,
@@ -151,6 +152,7 @@ defmodule SymphonyElixir.TestSupport do
     max_concurrent_agents_by_risk = Keyword.get(config, :max_concurrent_agents_by_risk)
     max_concurrent_agents_by_budget = Keyword.get(config, :max_concurrent_agents_by_budget)
     codex_command = Keyword.get(config, :codex_command)
+    codex_execution_environment = Keyword.get(config, :codex_execution_environment)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
     codex_thread_sandbox = Keyword.get(config, :codex_thread_sandbox)
     codex_turn_sandbox_policy = Keyword.get(config, :codex_turn_sandbox_policy)
@@ -204,6 +206,7 @@ defmodule SymphonyElixir.TestSupport do
         "  max_concurrent_agents_by_budget: #{yaml_value(max_concurrent_agents_by_budget)}",
         "codex:",
         "  command: #{yaml_value(codex_command)}",
+        "  execution_environment: #{yaml_value(codex_execution_environment)}",
         "  approval_policy: #{yaml_value(codex_approval_policy)}",
         "  thread_sandbox: #{yaml_value(codex_thread_sandbox)}",
         "  turn_sandbox_policy: #{yaml_value(codex_turn_sandbox_policy)}",

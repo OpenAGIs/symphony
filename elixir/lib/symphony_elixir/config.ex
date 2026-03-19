@@ -40,6 +40,7 @@ defmodule SymphonyElixir.Config do
       "mcp_elicitations" => true
     }
   }
+  @codex_execution_environments ~w(docker vm browser local_os)
   @default_codex_thread_sandbox "workspace-write"
   @default_observability_enabled true
   @default_observability_refresh_ms 1_000
@@ -137,6 +138,7 @@ defmodule SymphonyElixir.Config do
                                default: %{},
                                keys: [
                                  command: [type: :string, default: @default_codex_command],
+                                 execution_environment: [type: {:or, [:string, nil]}, default: nil],
                                  turn_timeout_ms: [
                                    type: :integer,
                                    default: @default_codex_turn_timeout_ms
@@ -433,6 +435,14 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec codex_execution_environment() :: String.t() | nil
+  def codex_execution_environment do
+    case resolve_codex_execution_environment() do
+      {:ok, execution_environment} -> execution_environment
+      {:error, _reason} -> nil
+    end
+  end
+
   @spec codex_turn_sandbox_policy(Path.t() | nil) :: map()
   def codex_turn_sandbox_policy(workspace \\ nil) do
     case resolve_codex_turn_sandbox_policy(workspace) do
@@ -539,7 +549,8 @@ defmodule SymphonyElixir.Config do
   @spec codex_runtime_settings(Path.t() | nil) ::
           {:ok, codex_runtime_settings()} | {:error, term()}
   def codex_runtime_settings(workspace \\ nil) do
-    with {:ok, approval_policy} <- resolve_codex_approval_policy(),
+    with {:ok, _execution_environment} <- resolve_codex_execution_environment(),
+         {:ok, approval_policy} <- resolve_codex_approval_policy(),
          {:ok, thread_sandbox} <- resolve_codex_thread_sandbox(),
          {:ok, turn_sandbox_policy} <- resolve_codex_turn_sandbox_policy(workspace) do
       {:ok,
@@ -701,6 +712,7 @@ defmodule SymphonyElixir.Config do
   defp extract_codex_options(section) do
     %{}
     |> put_if_present(:command, command_value(Map.get(section, "command")))
+    |> put_if_present(:execution_environment, execution_environment_value(Map.get(section, "execution_environment")))
     |> put_if_present(:turn_timeout_ms, integer_value(Map.get(section, "turn_timeout_ms")))
     |> put_if_present(:read_timeout_ms, integer_value(Map.get(section, "read_timeout_ms")))
     |> put_if_present(:stall_timeout_ms, integer_value(Map.get(section, "stall_timeout_ms")))
@@ -777,6 +789,15 @@ defmodule SymphonyElixir.Config do
   end
 
   defp command_value(_value), do: :omit
+
+  defp execution_environment_value(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> :omit
+      trimmed -> trimmed
+    end
+  end
+
+  defp execution_environment_value(_value), do: :omit
 
   defp hook_command_value(value) when is_binary(value) do
     case String.trim(value) do
@@ -1022,6 +1043,31 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  defp resolve_codex_execution_environment do
+    case fetch_value([["codex", "execution_environment"]], :missing) do
+      :missing -> {:ok, nil}
+      nil -> {:ok, nil}
+      value when is_binary(value) -> validate_codex_execution_environment(value)
+      value -> {:error, {:invalid_codex_execution_environment, value}}
+    end
+  end
+
+  defp validate_codex_execution_environment(value) do
+    execution_environment = String.trim(value)
+
+    cond do
+      execution_environment == "" ->
+        {:error, {:invalid_codex_execution_environment, value}}
+
+      execution_environment in @codex_execution_environments ->
+        {:ok, execution_environment}
+
+      true ->
+        reason = {:unsupported_value, execution_environment, @codex_execution_environments}
+        {:error, {:invalid_codex_execution_environment, reason}}
+    end
+  end
+
   defp resolve_codex_approval_policy do
     case fetch_value([["codex", "approval_policy"]], :missing) do
       :missing ->
@@ -1050,10 +1096,10 @@ defmodule SymphonyElixir.Config do
   defp resolve_codex_thread_sandbox do
     case fetch_value([["codex", "thread_sandbox"]], :missing) do
       :missing ->
-        {:ok, @default_codex_thread_sandbox}
+        codex_execution_environment_thread_sandbox()
 
       nil ->
-        {:ok, @default_codex_thread_sandbox}
+        codex_execution_environment_thread_sandbox()
 
       value when is_binary(value) ->
         thread_sandbox = String.trim(value)
@@ -1072,10 +1118,10 @@ defmodule SymphonyElixir.Config do
   defp resolve_codex_turn_sandbox_policy(workspace) do
     case fetch_value([["codex", "turn_sandbox_policy"]], :missing) do
       :missing ->
-        {:ok, default_codex_turn_sandbox_policy(workspace)}
+        codex_execution_environment_turn_sandbox_policy(workspace)
 
       nil ->
-        {:ok, default_codex_turn_sandbox_policy(workspace)}
+        codex_execution_environment_turn_sandbox_policy(workspace)
 
       value when is_map(value) ->
         {:ok, value}
@@ -1083,6 +1129,49 @@ defmodule SymphonyElixir.Config do
       value ->
         {:error, {:invalid_codex_turn_sandbox_policy, {:unsupported_value, value}}}
     end
+  end
+
+  defp codex_execution_environment_thread_sandbox do
+    case resolve_codex_execution_environment() do
+      {:ok, nil} -> {:ok, @default_codex_thread_sandbox}
+      {:ok, execution_environment} -> {:ok, execution_environment_thread_sandbox(execution_environment)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp codex_execution_environment_turn_sandbox_policy(workspace) do
+    case resolve_codex_execution_environment() do
+      {:ok, nil} -> {:ok, default_codex_turn_sandbox_policy(workspace)}
+      {:ok, execution_environment} -> {:ok, execution_environment_turn_sandbox_policy(execution_environment, workspace)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp execution_environment_thread_sandbox("docker"), do: "workspace-write"
+  defp execution_environment_thread_sandbox("vm"), do: "workspace-write"
+  defp execution_environment_thread_sandbox("browser"), do: "read-only"
+  defp execution_environment_thread_sandbox("local_os"), do: "danger-full-access"
+
+  defp execution_environment_turn_sandbox_policy("docker", workspace),
+    do: default_codex_turn_sandbox_policy(workspace)
+
+  defp execution_environment_turn_sandbox_policy("vm", _workspace) do
+    %{
+      "type" => "externalSandbox",
+      "networkAccess" => "restricted"
+    }
+  end
+
+  defp execution_environment_turn_sandbox_policy("browser", _workspace) do
+    %{
+      "type" => "readOnly",
+      "access" => %{"type" => "fullAccess"},
+      "networkAccess" => false
+    }
+  end
+
+  defp execution_environment_turn_sandbox_policy("local_os", _workspace) do
+    %{"type" => "dangerFullAccess"}
   end
 
   defp default_codex_turn_sandbox_policy(workspace) do

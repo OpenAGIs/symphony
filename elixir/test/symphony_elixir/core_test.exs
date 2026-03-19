@@ -1704,4 +1704,113 @@ defmodule SymphonyElixir.CoreTest do
       File.rm_rf(test_root)
     end
   end
+
+  test "app server applies execution environment sandbox presets" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-execution-environment-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-101")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-execution-environment.trace")
+      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+
+      on_exit(fn ->
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_CODEx_TRACE")
+        end
+      end)
+
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-execution-environment.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-101"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-101"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_execution_environment: "vm"
+      )
+
+      issue = %Issue{
+        id: "issue-execution-environment",
+        identifier: "MT-101",
+        title: "Execution environment preset",
+        description: "Check startup payload preset wiring",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-101",
+        labels: ["backend"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Use VM preset", issue)
+
+      lines = File.read!(trace_file) |> String.split("\n", trim: true)
+
+      assert Enum.any?(lines, fn line ->
+               if String.starts_with?(line, "JSON:") do
+                 line
+                 |> String.trim_leading("JSON:")
+                 |> Jason.decode!()
+                 |> then(fn payload ->
+                   payload["method"] == "thread/start" &&
+                     get_in(payload, ["params", "sandbox"]) == "workspace-write"
+                 end)
+               else
+                 false
+               end
+             end)
+
+      assert Enum.any?(lines, fn line ->
+               if String.starts_with?(line, "JSON:") do
+                 line
+                 |> String.trim_leading("JSON:")
+                 |> Jason.decode!()
+                 |> then(fn payload ->
+                   payload["method"] == "turn/start" &&
+                     get_in(payload, ["params", "sandboxPolicy"]) == %{"type" => "externalSandbox", "networkAccess" => "restricted"}
+                 end)
+               else
+                 false
+               end
+             end)
+    after
+      File.rm_rf(test_root)
+    end
+  end
 end

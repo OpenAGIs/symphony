@@ -159,12 +159,21 @@ Notes:
   - Quota maps under `agent.max_concurrent_agents_by_capability`, `agent.max_concurrent_agents_by_risk`, and `agent.max_concurrent_agents_by_budget` cap concurrent running issues for matching labels
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
+- `codex.execution_environment` optionally selects a higher-level sandbox preset: `docker`, `vm`, `browser`, or `local_os`
   - `codex.thread_sandbox` defaults to `workspace-write`
   - `codex.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace
+- Explicit `codex.thread_sandbox` and `codex.turn_sandbox_policy` values still override any preset selected through `codex.execution_environment`
 - Supported `codex.approval_policy` values depend on the targeted Codex app-server version. In the current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
 - Supported `codex.thread_sandbox` values: `read-only`, `workspace-write`, `danger-full-access`.
 - Supported `codex.turn_sandbox_policy.type` values: `dangerFullAccess`, `readOnly`,
   `externalSandbox`, `workspaceWrite`.
+
+Preset mapping for `codex.execution_environment`:
+
+- `docker` → `thread_sandbox: workspace-write`, `turn_sandbox_policy: workspaceWrite`
+- `vm` → `thread_sandbox: workspace-write`, `turn_sandbox_policy: externalSandbox`
+- `browser` → `thread_sandbox: read-only`, `turn_sandbox_policy: readOnly`
+- `local_os` → `thread_sandbox: danger-full-access`, `turn_sandbox_policy: dangerFullAccess`
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - `agent.max_retry_attempts` caps failure/continuation retry scheduling before Symphony moves the
