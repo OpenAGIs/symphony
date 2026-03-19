@@ -88,6 +88,11 @@ defmodule SymphonyElixir.TestSupport do
           tracker_path: nil,
           tracker_assignee: nil,
           tracker_active_states: ["Todo", "In Progress"],
+          tracker_todo_state: "Todo",
+          tracker_in_progress_state: "In Progress",
+          tracker_human_review_state: "Human Review",
+          tracker_merging_state: "Merging",
+          tracker_done_state: "Done",
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
           poll_interval_ms: 30_000,
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
@@ -110,6 +115,9 @@ defmodule SymphonyElixir.TestSupport do
           codex_turn_timeout_ms: 3_600_000,
           codex_read_timeout_ms: 5_000,
           codex_stall_timeout_ms: 300_000,
+          codex_dynamic_tool_timeout_ms: 30_000,
+          codex_dynamic_tool_max_retries: 2,
+          codex_dynamic_tool_allow_mutations: true,
           hook_after_create: nil,
           hook_before_run: nil,
           hook_after_run: nil,
@@ -137,6 +145,11 @@ defmodule SymphonyElixir.TestSupport do
     tracker_path = Keyword.get(config, :tracker_path)
     tracker_assignee = Keyword.get(config, :tracker_assignee)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
+    tracker_todo_state = Keyword.get(config, :tracker_todo_state)
+    tracker_in_progress_state = Keyword.get(config, :tracker_in_progress_state)
+    tracker_human_review_state = Keyword.get(config, :tracker_human_review_state)
+    tracker_merging_state = Keyword.get(config, :tracker_merging_state)
+    tracker_done_state = Keyword.get(config, :tracker_done_state)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
     workspace_root = Keyword.get(config, :workspace_root)
@@ -159,6 +172,9 @@ defmodule SymphonyElixir.TestSupport do
     codex_turn_timeout_ms = Keyword.get(config, :codex_turn_timeout_ms)
     codex_read_timeout_ms = Keyword.get(config, :codex_read_timeout_ms)
     codex_stall_timeout_ms = Keyword.get(config, :codex_stall_timeout_ms)
+    codex_dynamic_tool_timeout_ms = Keyword.get(config, :codex_dynamic_tool_timeout_ms)
+    codex_dynamic_tool_max_retries = Keyword.get(config, :codex_dynamic_tool_max_retries)
+    codex_dynamic_tool_allow_mutations = Keyword.get(config, :codex_dynamic_tool_allow_mutations)
     hook_after_create = Keyword.get(config, :hook_after_create)
     hook_before_run = Keyword.get(config, :hook_before_run)
     hook_after_run = Keyword.get(config, :hook_after_run)
@@ -187,6 +203,11 @@ defmodule SymphonyElixir.TestSupport do
         "  path: #{yaml_value(tracker_path)}",
         "  assignee: #{yaml_value(tracker_assignee)}",
         "  active_states: #{yaml_value(tracker_active_states)}",
+        "  todo_state: #{yaml_value(tracker_todo_state)}",
+        "  in_progress_state: #{yaml_value(tracker_in_progress_state)}",
+        "  human_review_state: #{yaml_value(tracker_human_review_state)}",
+        "  merging_state: #{yaml_value(tracker_merging_state)}",
+        "  done_state: #{yaml_value(tracker_done_state)}",
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
         "polling:",
         "  interval_ms: #{yaml_value(poll_interval_ms)}",
@@ -213,6 +234,9 @@ defmodule SymphonyElixir.TestSupport do
         "  turn_timeout_ms: #{yaml_value(codex_turn_timeout_ms)}",
         "  read_timeout_ms: #{yaml_value(codex_read_timeout_ms)}",
         "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
+        "  dynamic_tool_timeout_ms: #{yaml_value(codex_dynamic_tool_timeout_ms)}",
+        "  dynamic_tool_max_retries: #{yaml_value(codex_dynamic_tool_max_retries)}",
+        "  dynamic_tool_allow_mutations: #{yaml_value(codex_dynamic_tool_allow_mutations)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         workflow_yaml(workflow_strategy, workflow_acceptance, workflow_approvals, workflow_retry, workflow_writeback),

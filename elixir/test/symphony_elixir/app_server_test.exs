@@ -316,6 +316,11 @@ defmodule SymphonyElixir.AppServerTest do
         tool["name"] == "linear_workpad" and
           get_in(tool, ["inputSchema", "required"]) == ["action"] and
           String.contains?(tool["description"] || "", "workpad")
+      end) and
+      Enum.any?(dynamic_tools, fn tool ->
+        tool["name"] == "linear_update_issue_state" and
+          get_in(tool, ["inputSchema", "required"]) == ["state"] and
+          String.contains?(tool["description"] || "", "approval flow")
       end)
   end
 
