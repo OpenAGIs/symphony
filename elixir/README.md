@@ -119,6 +119,15 @@ hooks:
 agent:
   max_concurrent_agents: 10
   max_turns: 20
+  capabilities: [backend, frontend]
+  max_risk_level: high
+  max_issue_budget: 5
+  max_concurrent_agents_by_capability:
+    frontend: 2
+  max_concurrent_agents_by_risk:
+    high: 1
+  max_concurrent_agents_by_budget:
+    5: 1
 codex:
   command: codex app-server
 workflow:
@@ -167,6 +176,11 @@ Body: {{ issue.description }}
 Notes:
 
 - If a value is missing, defaults are used.
+- Scheduler-aware label prefixes are optional and case-insensitive after normalization:
+  - `capability:<name>` or `cap:<name>` requires that capability to be present in `agent.capabilities`
+  - `risk:<low|medium|high|critical>` is compared against `agent.max_risk_level`
+  - `budget:<positive-integer>` is compared against `agent.max_issue_budget`
+  - Quota maps under `agent.max_concurrent_agents_by_capability`, `agent.max_concurrent_agents_by_risk`, and `agent.max_concurrent_agents_by_budget` cap concurrent running issues for matching labels
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
   - `codex.thread_sandbox` defaults to `workspace-write`

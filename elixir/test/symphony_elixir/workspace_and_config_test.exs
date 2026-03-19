@@ -460,6 +460,99 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     refute Orchestrator.should_dispatch_issue_for_test(issue, state)
   end
 
+  test "scheduler rejects issues requiring unsupported capability labels" do
+    write_workflow_file!(Workflow.workflow_file_path(), capabilities: ["backend"])
+
+    state = %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{},
+      claimed: MapSet.new(),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: "cap-1",
+      identifier: "MT-1100",
+      title: "Frontend task",
+      state: "Todo",
+      labels: ["capability:frontend"]
+    }
+
+    refute Orchestrator.should_dispatch_issue_for_test(issue, state)
+  end
+
+  test "scheduler rejects issues above configured risk or budget limits" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      max_risk_level: "medium",
+      max_issue_budget: 3
+    )
+
+    state = %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{},
+      claimed: MapSet.new(),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    risky_issue = %Issue{
+      id: "risk-1",
+      identifier: "MT-1101",
+      title: "Risky task",
+      state: "Todo",
+      labels: ["risk:high"]
+    }
+
+    expensive_issue = %Issue{
+      id: "budget-1",
+      identifier: "MT-1102",
+      title: "Expensive task",
+      state: "Todo",
+      labels: ["budget:5"]
+    }
+
+    refute Orchestrator.should_dispatch_issue_for_test(risky_issue, state)
+    refute Orchestrator.should_dispatch_issue_for_test(expensive_issue, state)
+  end
+
+  test "scheduler enforces capability, risk, and budget quotas across running work" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      capabilities: ["frontend"],
+      max_risk_level: "high",
+      max_issue_budget: 5,
+      max_concurrent_agents_by_capability: %{"frontend" => 1},
+      max_concurrent_agents_by_risk: %{"high" => 1},
+      max_concurrent_agents_by_budget: %{"5" => 1}
+    )
+
+    running_issue = %Issue{
+      id: "running-1",
+      identifier: "MT-1103",
+      title: "Running task",
+      state: "Todo",
+      labels: ["capability:frontend", "risk:high", "budget:5"]
+    }
+
+    state = %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{"running-1" => %{issue: running_issue}},
+      claimed: MapSet.new(),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    blocked_issue = %Issue{
+      id: "queued-1",
+      identifier: "MT-1104",
+      title: "Queued task",
+      state: "Todo",
+      labels: ["capability:frontend", "risk:high", "budget:5"]
+    }
+
+    refute Orchestrator.should_dispatch_issue_for_test(blocked_issue, state)
+  end
+
   test "todo issue with terminal blockers remains dispatch-eligible" do
     state = %Orchestrator.State{
       max_concurrent_agents: 3,
@@ -771,7 +864,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       poll_interval_ms: %{bad: true},
       workspace_root: 123,
       max_retry_backoff_ms: 0,
+      capabilities: %{frontend: true},
+      max_risk_level: %{bad: true},
+      max_issue_budget: 0,
       max_concurrent_agents_by_state: %{"Todo" => "1", "Review" => 0, "Done" => "bad"},
+      max_concurrent_agents_by_capability: %{"frontend" => "2", "backend" => 0},
+      max_concurrent_agents_by_risk: %{"high" => "1", "bogus" => 3},
+      max_concurrent_agents_by_budget: %{"2" => "1", "invalid" => 4},
       hook_timeout_ms: 0,
       observability_enabled: "maybe",
       observability_refresh_ms: %{bad: true},
@@ -785,8 +884,17 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.poll_interval_ms() == 30_000
     assert Config.workspace_root() == Path.join(System.tmp_dir!(), "symphony_workspaces")
     assert Config.max_retry_backoff_ms() == 300_000
+    assert Config.agent_capabilities() == []
+    assert Config.max_issue_risk_level() == nil
+    assert Config.max_issue_budget() == nil
     assert Config.max_concurrent_agents_for_state("Todo") == 1
     assert Config.max_concurrent_agents_for_state("Review") == 10
+    assert Config.max_concurrent_agents_for_capability("frontend") == 2
+    assert Config.max_concurrent_agents_for_capability("ios") == 10
+    assert Config.max_concurrent_agents_for_risk("high") == 1
+    assert Config.max_concurrent_agents_for_risk("medium") == 10
+    assert Config.max_concurrent_agents_for_budget(2) == 1
+    assert Config.max_concurrent_agents_for_budget(5) == 10
     assert Config.hook_timeout_ms() == 60_000
     assert Config.observability_enabled?()
     assert Config.observability_refresh_ms() == 1_000
@@ -960,6 +1068,40 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.max_concurrent_agents_for_state("In Review") == 2
     assert Config.max_concurrent_agents_for_state("Closed") == 10
     assert Config.max_concurrent_agents_for_state(:not_a_string) == 10
+  end
+
+  test "config supports scheduler capability, risk, budget, and quota overrides" do
+    workflow = """
+    ---
+    agent:
+      max_concurrent_agents: 10
+      capabilities: ["frontend", "Backend", "frontend"]
+      max_risk_level: "High"
+      max_issue_budget: 5
+      max_concurrent_agents_by_capability:
+        frontend: 2
+        backend: 1
+      max_concurrent_agents_by_risk:
+        low: 4
+        high: 1
+      max_concurrent_agents_by_budget:
+        2: 3
+        5: 1
+    ---
+    """
+
+    File.write!(Workflow.workflow_file_path(), workflow)
+
+    assert Config.agent_capabilities() == ["frontend", "backend"]
+    assert Config.agent_supports_capability?("frontend")
+    assert Config.agent_supports_capability?("Backend")
+    refute Config.agent_supports_capability?("ios")
+    assert Config.max_issue_risk_level() == "high"
+    assert Config.max_issue_budget() == 5
+    assert Config.max_concurrent_agents_for_capability("frontend") == 2
+    assert Config.max_concurrent_agents_for_capability("backend") == 1
+    assert Config.max_concurrent_agents_for_risk("high") == 1
+    assert Config.max_concurrent_agents_for_budget(5) == 1
   end
 
   test "workflow prompt is used when building base prompt" do

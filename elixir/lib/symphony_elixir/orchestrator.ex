@@ -498,7 +498,8 @@ defmodule SymphonyElixir.Orchestrator do
       !MapSet.member?(claimed, issue.id) and
       !Map.has_key?(running, issue.id) and
       available_slots(state) > 0 and
-      state_slots_available?(issue, running)
+      state_slots_available?(issue, running) and
+      scheduler_slots_available?(issue, running)
   end
 
   defp should_dispatch_issue?(_issue, _state, _active_states, _terminal_states), do: false
@@ -536,7 +537,8 @@ defmodule SymphonyElixir.Orchestrator do
        when is_binary(id) and is_binary(identifier) and is_binary(title) and is_binary(state_name) do
     issue_routable_to_worker?(issue) and
       active_issue_state?(state_name, active_states) and
-      !terminal_issue_state?(state_name, terminal_states)
+      !terminal_issue_state?(state_name, terminal_states) and
+      issue_scheduler_eligible?(issue)
   end
 
   defp candidate_issue?(_issue, _active_states, _terminal_states), do: false
@@ -576,6 +578,98 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp normalize_issue_state(state_name) when is_binary(state_name) do
     String.downcase(String.trim(state_name))
+  end
+
+  defp issue_scheduler_eligible?(%Issue{} = issue) do
+    capabilities_supported?(issue) and risk_within_limit?(issue) and budget_within_limit?(issue)
+  end
+
+  defp capabilities_supported?(%Issue{} = issue) do
+    case Issue.required_capabilities(issue) do
+      [] -> true
+      capabilities -> Enum.all?(capabilities, &Config.agent_supports_capability?/1)
+    end
+  end
+
+  defp risk_within_limit?(%Issue{} = issue) do
+    case {Issue.risk_level(issue), Config.max_issue_risk_level()} do
+      {nil, _} -> true
+      {_risk, nil} -> true
+      {risk_level, max_risk_level} -> Issue.risk_rank(risk_level) <= Issue.risk_rank(max_risk_level)
+    end
+  end
+
+  defp budget_within_limit?(%Issue{} = issue) do
+    case {Issue.budget(issue), Config.max_issue_budget()} do
+      {nil, _} -> true
+      {_budget, nil} -> true
+      {budget, max_budget} -> budget <= max_budget
+    end
+  end
+
+  defp scheduler_slots_available?(%Issue{} = issue, running) when is_map(running) do
+    capability_slots_available?(issue, running) and
+      risk_slots_available?(issue, running) and
+      budget_slots_available?(issue, running)
+  end
+
+  defp scheduler_slots_available?(_issue, _running), do: false
+
+  defp capability_slots_available?(%Issue{} = issue, running) do
+    issue
+    |> Issue.required_capabilities()
+    |> Enum.all?(fn capability ->
+      limit = Config.max_concurrent_agents_for_capability(capability)
+      used = running_issue_count_for_capability(running, capability)
+      limit > used
+    end)
+  end
+
+  defp risk_slots_available?(%Issue{} = issue, running) do
+    case Issue.risk_level(issue) do
+      nil ->
+        true
+
+      risk_level ->
+        limit = Config.max_concurrent_agents_for_risk(risk_level)
+        used = running_issue_count_for_risk(running, risk_level)
+        limit > used
+    end
+  end
+
+  defp budget_slots_available?(%Issue{} = issue, running) do
+    case Issue.budget(issue) do
+      nil ->
+        true
+
+      budget ->
+        limit = Config.max_concurrent_agents_for_budget(budget)
+        used = running_issue_count_for_budget(running, budget)
+        limit > used
+    end
+  end
+
+  defp running_issue_count_for_capability(running, capability) when is_map(running) do
+    Enum.count(running, fn
+      {_id, %{issue: %Issue{} = running_issue}} -> capability in Issue.required_capabilities(running_issue)
+      _ -> false
+    end)
+  end
+
+  defp running_issue_count_for_risk(running, risk_level) when is_map(running) do
+    normalized_risk_level = risk_level |> to_string() |> String.trim() |> String.downcase()
+
+    Enum.count(running, fn
+      {_id, %{issue: %Issue{} = running_issue}} -> Issue.risk_level(running_issue) == normalized_risk_level
+      _ -> false
+    end)
+  end
+
+  defp running_issue_count_for_budget(running, budget) when is_map(running) do
+    Enum.count(running, fn
+      {_id, %{issue: %Issue{} = running_issue}} -> Issue.budget(running_issue) == budget
+      _ -> false
+    end)
   end
 
   defp terminal_state_set do
@@ -1185,7 +1279,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_slots_available?(%Issue{} = issue, %State{} = state) do
-    available_slots(state) > 0 and state_slots_available?(issue, state.running)
+    available_slots(state) > 0 and state_slots_available?(issue, state.running) and
+      scheduler_slots_available?(issue, state.running)
   end
 
   defp apply_codex_token_delta(

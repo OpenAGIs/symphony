@@ -30,6 +30,15 @@ hooks:
 agent:
   max_concurrent_agents: 10
   max_turns: 20
+  capabilities: [backend, frontend]
+  max_risk_level: high
+  max_issue_budget: 5
+  max_concurrent_agents_by_capability:
+    frontend: 2
+  max_concurrent_agents_by_risk:
+    high: 1
+  max_concurrent_agents_by_budget:
+    5: 1
 codex:
   # Keep app-server env defaults; avoid inheriting restrictive parent shell sandbox vars.
   command: codex --config model_reasoning_effort=medium app-server

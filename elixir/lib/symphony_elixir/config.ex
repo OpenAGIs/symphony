@@ -103,7 +103,25 @@ defmodule SymphonyElixir.Config do
                                    type: :pos_integer,
                                    default: @default_max_retry_backoff_ms
                                  ],
+                                 capabilities: [type: {:list, :string}, default: []],
+                                 max_risk_level: [type: {:or, [:string, nil]}, default: nil],
+                                 max_issue_budget: [
+                                   type: {:or, [:pos_integer, nil]},
+                                   default: nil
+                                 ],
                                  max_concurrent_agents_by_state: [
+                                   type: {:map, :string, :pos_integer},
+                                   default: %{}
+                                 ],
+                                 max_concurrent_agents_by_capability: [
+                                   type: {:map, :string, :pos_integer},
+                                   default: %{}
+                                 ],
+                                 max_concurrent_agents_by_risk: [
+                                   type: {:map, :string, :pos_integer},
+                                   default: %{}
+                                 ],
+                                 max_concurrent_agents_by_budget: [
                                    type: {:map, :string, :pos_integer},
                                    default: %{}
                                  ]
@@ -197,6 +215,8 @@ defmodule SymphonyElixir.Config do
           before_remove: String.t() | nil,
           timeout_ms: pos_integer()
         }
+
+  @type issue_risk_level :: String.t() | nil
 
   @spec current_workflow() :: {:ok, workflow_payload()} | {:error, term()}
   def current_workflow do
@@ -312,6 +332,57 @@ defmodule SymphonyElixir.Config do
   def max_retry_backoff_ms do
     get_in(validated_workflow_options(), [:agent, :max_retry_backoff_ms])
   end
+
+  @spec agent_capabilities() :: [String.t()]
+  def agent_capabilities do
+    get_in(validated_workflow_options(), [:agent, :capabilities])
+  end
+
+  @spec agent_supports_capability?(String.t() | term()) :: boolean()
+  def agent_supports_capability?(capability) when is_binary(capability) do
+    normalized_capability = normalize_capability(capability)
+
+    normalized_capability != "" and normalized_capability in agent_capabilities()
+  end
+
+  def agent_supports_capability?(_capability), do: false
+
+  @spec max_issue_risk_level() :: issue_risk_level()
+  def max_issue_risk_level do
+    get_in(validated_workflow_options(), [:agent, :max_risk_level])
+  end
+
+  @spec max_issue_budget() :: pos_integer() | nil
+  def max_issue_budget do
+    get_in(validated_workflow_options(), [:agent, :max_issue_budget])
+  end
+
+  @spec max_concurrent_agents_for_capability(term()) :: pos_integer()
+  def max_concurrent_agents_for_capability(capability) when is_binary(capability) do
+    capability_limits = get_in(validated_workflow_options(), [:agent, :max_concurrent_agents_by_capability])
+    global_limit = max_concurrent_agents()
+    Map.get(capability_limits, normalize_capability(capability), global_limit)
+  end
+
+  def max_concurrent_agents_for_capability(_capability), do: max_concurrent_agents()
+
+  @spec max_concurrent_agents_for_risk(term()) :: pos_integer()
+  def max_concurrent_agents_for_risk(risk_level) when is_binary(risk_level) do
+    risk_limits = get_in(validated_workflow_options(), [:agent, :max_concurrent_agents_by_risk])
+    global_limit = max_concurrent_agents()
+    Map.get(risk_limits, normalize_risk_level(risk_level), global_limit)
+  end
+
+  def max_concurrent_agents_for_risk(_risk_level), do: max_concurrent_agents()
+
+  @spec max_concurrent_agents_for_budget(term()) :: pos_integer()
+  def max_concurrent_agents_for_budget(budget) when is_integer(budget) and budget > 0 do
+    budget_limits = get_in(validated_workflow_options(), [:agent, :max_concurrent_agents_by_budget])
+    global_limit = max_concurrent_agents()
+    Map.get(budget_limits, Integer.to_string(budget), global_limit)
+  end
+
+  def max_concurrent_agents_for_budget(_budget), do: max_concurrent_agents()
 
   @spec agent_max_turns() :: pos_integer()
   def agent_max_turns do
@@ -596,9 +667,24 @@ defmodule SymphonyElixir.Config do
       :max_retry_backoff_ms,
       positive_integer_value(Map.get(section, "max_retry_backoff_ms"))
     )
+    |> put_if_present(:capabilities, capability_values(Map.get(section, "capabilities")))
+    |> put_if_present(:max_risk_level, risk_level_value(Map.get(section, "max_risk_level")))
+    |> put_if_present(:max_issue_budget, positive_integer_value(Map.get(section, "max_issue_budget")))
     |> put_if_present(
       :max_concurrent_agents_by_state,
       state_limits_value(Map.get(section, "max_concurrent_agents_by_state"))
+    )
+    |> put_if_present(
+      :max_concurrent_agents_by_capability,
+      capability_limits_value(Map.get(section, "max_concurrent_agents_by_capability"))
+    )
+    |> put_if_present(
+      :max_concurrent_agents_by_risk,
+      risk_limits_value(Map.get(section, "max_concurrent_agents_by_risk"))
+    )
+    |> put_if_present(
+      :max_concurrent_agents_by_budget,
+      budget_limits_value(Map.get(section, "max_concurrent_agents_by_budget"))
     )
   end
 
@@ -796,6 +882,101 @@ defmodule SymphonyElixir.Config do
   end
 
   defp state_limits_value(_value), do: :omit
+
+  defp capability_values(value) when is_list(value) do
+    value
+    |> Enum.reduce([], fn capability, acc ->
+      case scalar_string_value(capability) do
+        :omit -> acc
+        normalized -> [normalize_capability(normalized) | acc]
+      end
+    end)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.reverse()
+    |> Enum.uniq()
+    |> case do
+      [] -> :omit
+      capabilities -> capabilities
+    end
+  end
+
+  defp capability_values(value) when is_binary(value) do
+    value
+    |> csv_value()
+    |> case do
+      :omit -> :omit
+      capabilities -> capability_values(capabilities)
+    end
+  end
+
+  defp capability_values(_value), do: :omit
+
+  defp capability_limits_value(value) when is_map(value) do
+    value
+    |> Enum.reduce(%{}, fn {capability, limit}, acc ->
+      case parse_positive_integer(limit) do
+        {:ok, parsed} -> Map.put(acc, normalize_capability(to_string(capability)), parsed)
+        :error -> acc
+      end
+    end)
+  end
+
+  defp capability_limits_value(_value), do: :omit
+
+  defp risk_level_value(value) when is_binary(value) do
+    case normalize_risk_level(value) do
+      nil -> :omit
+      normalized -> normalized
+    end
+  end
+
+  defp risk_level_value(_value), do: :omit
+
+  defp risk_limits_value(value) when is_map(value) do
+    value
+    |> Enum.reduce(%{}, fn {risk_level, limit}, acc ->
+      normalized_risk_level = normalize_risk_level(to_string(risk_level))
+
+      case {normalized_risk_level, parse_positive_integer(limit)} do
+        {nil, _} -> acc
+        {_, :error} -> acc
+        {normalized, {:ok, parsed}} -> Map.put(acc, normalized, parsed)
+      end
+    end)
+  end
+
+  defp risk_limits_value(_value), do: :omit
+
+  defp budget_limits_value(value) when is_map(value) do
+    value
+    |> Enum.reduce(%{}, fn {budget, limit}, acc ->
+      case {parse_positive_integer(budget), parse_positive_integer(limit)} do
+        {{:ok, normalized_budget}, {:ok, parsed}} ->
+          Map.put(acc, Integer.to_string(normalized_budget), parsed)
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  defp budget_limits_value(_value), do: :omit
+
+  defp normalize_capability(capability) when is_binary(capability) do
+    capability
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp normalize_risk_level(level) when is_binary(level) do
+    level
+    |> String.trim()
+    |> String.downcase()
+    |> case do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
 
   defp parse_integer(value) when is_integer(value), do: {:ok, value}
 
