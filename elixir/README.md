@@ -123,7 +123,7 @@ codex:
   command: codex app-server
 ---
 
-You are working on a Linear issue {{ issue.identifier }}.
+You are working on a {{ tracker.display_name }} issue {{ issue.identifier }}.
 
 Title: {{ issue.title }} Body: {{ issue.description }}
 ```
@@ -168,8 +168,11 @@ Notes:
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
-  identifier, title, and body.
+  identifier, title, body, and tracker display name.
 - Set `server.host` / `server.port` to make the browser dashboard available during local runs.
+- Built-in tracker runtime support is currently provided for `linear`, `local`, and `memory`;
+  `jira` and `github` resolve cleanly at the workflow/task-entry layer and can be bound to runtime
+  adapters through `:tracker_adapter_modules`.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
 - Hook commands receive `SYMPHONY_WORKSPACE`, `SYMPHONY_ISSUE_ID`, `SYMPHONY_ISSUE_IDENTIFIER`,

@@ -5,6 +5,9 @@ defmodule SymphonyElixir.Tracker do
 
   alias SymphonyElixir.Config
   alias SymphonyElixir.Tracker.Local
+  alias SymphonyElixir.Linear.Adapter, as: LinearAdapter
+  alias SymphonyElixir.Tracker.Memory
+  alias SymphonyElixir.Tracker.Unsupported
 
   @callback fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
   @callback fetch_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}
@@ -62,9 +65,17 @@ defmodule SymphonyElixir.Tracker do
   @spec adapter() :: module()
   def adapter do
     case Config.tracker_kind() do
-      "local" -> SymphonyElixir.Tracker.Local
-      "memory" -> SymphonyElixir.Tracker.Memory
-      _ -> SymphonyElixir.Linear.Adapter
+      "local" -> Local
+      "memory" -> Memory
+      "linear" -> LinearAdapter
+      kind -> adapter_for_kind(kind)
     end
   end
+
+  defp adapter_for_kind(kind) when is_binary(kind) do
+    Application.get_env(:symphony_elixir, :tracker_adapter_modules, %{})
+    |> Map.get(kind, Unsupported)
+  end
+
+  defp adapter_for_kind(_kind), do: Unsupported
 end

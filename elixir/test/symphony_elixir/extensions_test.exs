@@ -6,6 +6,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   alias SymphonyElixir.Linear.{Adapter, MetadataCache}
   alias SymphonyElixir.Tracker.Memory
+  alias SymphonyElixir.Tracker.Unsupported
 
   @endpoint SymphonyElixirWeb.Endpoint
 
@@ -79,12 +80,19 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    tracker_adapter_modules = Application.get_env(:symphony_elixir, :tracker_adapter_modules)
 
     on_exit(fn ->
       if is_nil(linear_client_module) do
         Application.delete_env(:symphony_elixir, :linear_client_module)
       else
         Application.put_env(:symphony_elixir, :linear_client_module, linear_client_module)
+      end
+
+      if is_nil(tracker_adapter_modules) do
+        Application.delete_env(:symphony_elixir, :tracker_adapter_modules)
+      else
+        Application.put_env(:symphony_elixir, :tracker_adapter_modules, tracker_adapter_modules)
       end
     end)
 
@@ -231,6 +239,19 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert SymphonyElixir.Tracker.adapter() == Adapter
     assert :ok = SymphonyElixir.Tracker.claim_issue("issue-1", "runtime-a")
     assert :ok = SymphonyElixir.Tracker.release_issue_claim("issue-1", "runtime-a")
+  end
+
+  test "tracker resolves configured non-linear adapters and unsupported fallback" do
+    Application.put_env(:symphony_elixir, :tracker_adapter_modules, %{"jira" => Memory})
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "jira")
+    assert SymphonyElixir.Tracker.adapter() == Memory
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "github")
+    assert SymphonyElixir.Tracker.adapter() == Unsupported
+
+    assert {:error, {:unsupported_tracker_adapter, "github"}} =
+             SymphonyElixir.Tracker.fetch_candidate_issues()
   end
 
   test "linear adapter delegates reads and validates mutation responses" do
