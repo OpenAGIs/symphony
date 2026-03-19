@@ -89,6 +89,8 @@ defmodule SymphonyElixir.LocalTrackerTest do
     assert [%{"body" => "first note", "created_at" => created_at}] = issue["comments"]
     assert is_binary(created_at)
     assert is_binary(issue["updated_at"])
+
+    assert {:ok, [%Issue{comments: [%{body: "first note", created_at: %DateTime{}}]}]} = Local.list_issues()
   end
 
   test "local tracker creates issues with generated ids and accepts identifier-based updates" do
@@ -233,6 +235,12 @@ defmodule SymphonyElixir.LocalTrackerTest do
     Process.sleep(10)
 
     assert {:ok, [%Issue{id: "issue-lease-2"}]} = Local.fetch_candidate_issues()
+
+    assert {:ok, [%Issue{id: "issue-lease-2"} = expired_issue]} =
+             Local.fetch_issue_states_by_ids(["issue-lease-2"])
+
+    assert Local.lease_status(expired_issue) == :expired
+
     assert :ok = Local.claim_issue("issue-lease-2", "runtime-b", ttl_ms: 60_000)
 
     assert {:ok, [%Issue{id: "issue-lease-2", claimed_by: "runtime-b"}]} =
@@ -311,6 +319,12 @@ defmodule SymphonyElixir.LocalTrackerTest do
             "state" => "Todo",
             "labels" => ["API"],
             "blocked_by" => ["LOC-1"],
+            "comments" => [
+              %{"body" => "normalized note", "created_at" => "bad"},
+              %{"body" => ""},
+              %{"created_at" => "2026-03-19T00:00:00Z"},
+              "noise"
+            ],
             "created_at" => "bad",
             "updated_at" => "bad"
           },
@@ -327,6 +341,7 @@ defmodule SymphonyElixir.LocalTrackerTest do
     assert normalized.priority == nil
     assert normalized.labels == ["api"]
     assert normalized.blocked_by == ["LOC-1"]
+    assert normalized.comments == [%{body: "normalized note", created_at: nil}]
     assert normalized.created_at == nil
     assert normalized.updated_at == nil
     assert {:ok, [%Issue{id: "123"}]} = Local.fetch_issues_by_states([" todo ", 42])

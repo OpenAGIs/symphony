@@ -663,7 +663,13 @@ defmodule SymphonyElixir.ExtensionsTest do
               "labels" => ["dashboard", "local"],
               "claimed_by" => "runtime-a",
               "claimed_at" => "2026-03-19T00:00:00Z",
-              "lease_expires_at" => "2026-03-19T00:05:00Z"
+              "lease_expires_at" => "2099-03-19T00:05:00Z",
+              "comments" => [
+                %{
+                  "body" => "first synced note",
+                  "created_at" => "2026-03-19T00:01:00Z"
+                }
+              ]
             }
           ]
         },
@@ -695,6 +701,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ tracker_path
     assert html =~ Path.join(Config.workspace_root(), "LOCAL-1")
     assert html =~ "runtime-a"
+    assert html =~ "first synced note"
+    assert html =~ "Release Lease"
+    assert html =~ "Leased"
+    assert html =~ ~r/Runnable.*?<p class="metric-value">0<\/p>/s
 
     local_issue_payload = json_response(get(build_conn(), "/api/v1/LOCAL-1"), 200)
 
@@ -703,7 +713,24 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert local_issue_payload["tracked"]["title"] == "Move the workflow UI local"
     assert local_issue_payload["workspace"]["path"] == Path.join(Config.workspace_root(), "LOCAL-1")
     assert local_issue_payload["tracked"]["claimed_by"] == "runtime-a"
-    assert local_issue_payload["tracked"]["lease_expires_at"] == "2026-03-19T00:05:00Z"
+    assert local_issue_payload["tracked"]["lease_expires_at"] == "2099-03-19T00:05:00Z"
+    assert local_issue_payload["tracked"]["lease_status"] == "active"
+
+    assert local_issue_payload["tracked"]["comments"] == [
+             %{
+               "body" => "first synced note",
+               "created_at" => "2026-03-19T00:01:00Z"
+             }
+           ]
+
+    released_html =
+      view
+      |> form("#local-issue-release-local-1", %{"issue_ref" => "local-1"})
+      |> render_submit()
+
+    assert released_html =~ "Released lease on local-1"
+    assert released_html =~ "Idle"
+    assert released_html =~ ~r/Runnable.*?<p class="metric-value">1<\/p>/s
 
     created_html =
       view
@@ -736,6 +763,9 @@ defmodule SymphonyElixir.ExtensionsTest do
       Enum.any?(issues, fn issue ->
         issue["identifier"] == "LOCAL-1" and issue["state"] == "Done"
       end) and
+        Enum.any?(issues, fn issue ->
+          issue["identifier"] == "LOCAL-1" and is_nil(issue["claimed_by"])
+        end) and
         Enum.any?(issues, fn issue ->
           issue["identifier"] == "LOCAL-2" and issue["state"] == "In Progress"
         end)

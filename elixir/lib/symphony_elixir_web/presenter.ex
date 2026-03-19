@@ -212,7 +212,22 @@ defmodule SymphonyElixirWeb.Presenter do
       updated_at: iso8601(issue.updated_at),
       claimed_by: issue.claimed_by,
       claimed_at: iso8601(issue.claimed_at),
-      lease_expires_at: iso8601(issue.lease_expires_at)
+      lease_expires_at: iso8601(issue.lease_expires_at),
+      lease_status: issue |> Local.lease_status() |> Atom.to_string(),
+      comments: comments_payload(Map.get(issue, :comments, []))
+    }
+  end
+
+  defp comments_payload(comments) when is_list(comments) do
+    Enum.map(comments, &comment_payload/1)
+  end
+
+  defp comments_payload(_comments), do: []
+
+  defp comment_payload(comment) when is_map(comment) do
+    %{
+      body: Map.get(comment, :body),
+      created_at: iso8601(Map.get(comment, :created_at))
     }
   end
 

@@ -685,7 +685,8 @@ defmodule SymphonyElixir.AppServerTest do
                      "local_issue_list",
                      "local_issue_create",
                      "local_issue_state",
-                     "local_issue_comment"
+                     "local_issue_comment",
+                     "local_issue_release"
                    ]
                else
                  false

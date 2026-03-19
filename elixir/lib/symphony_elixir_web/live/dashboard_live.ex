@@ -100,6 +100,30 @@ defmodule SymphonyElixirWeb.DashboardLive do
     {:noreply, refresh_local_tracker(socket, issue_ref)}
   end
 
+  def handle_event("release_local_issue_lease", %{"issue_ref" => issue_ref}, socket) do
+    case Local.release_issue_claim(issue_ref) do
+      :ok ->
+        ObservabilityPubSub.broadcast_update()
+
+        {:noreply,
+         socket
+         |> assign(:local_tracker_feedback, %{
+           kind: :info,
+           message: "Released lease on #{issue_ref}"
+         })
+         |> refresh_local_tracker(issue_ref)}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:local_tracker_feedback, %{
+           kind: :error,
+           message: local_tracker_error_message("Failed to release local issue lease", reason)
+         })
+         |> refresh_local_tracker(issue_ref)}
+    end
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -352,8 +376,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
                 <article class="tracker-summary-card">
                   <p class="metric-label">Runnable</p>
-                  <p class="metric-value"><%= local_issue_count(@local_tracker, ["Todo", "Rework"]) %></p>
-                  <p class="metric-detail">Queued slices that can be picked up next.</p>
+                  <p class="metric-value"><%= local_runnable_issue_count(@local_tracker) %></p>
+                  <p class="metric-detail">Queued slices that are not actively leased by another runtime.</p>
                 </article>
 
                 <article class="tracker-summary-card">
@@ -496,6 +520,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <dd class="mono"><%= issue.claimed_by || "unclaimed" %></dd>
                     </div>
                     <div>
+                      <dt>Lease Status</dt>
+                      <dd><%= local_issue_lease_label(issue) %></dd>
+                    </div>
+                    <div>
                       <dt>Claimed At</dt>
                       <dd class="mono"><%= issue.claimed_at || "n/a" %></dd>
                     </div>
@@ -520,6 +548,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <dd><%= local_issue_blocked_by(issue.blocked_by) %></dd>
                     </div>
                   </dl>
+
+                  <form
+                    :if={local_issue_release_available?(issue)}
+                    id={"local-issue-release-#{issue.id}"}
+                    phx-submit="release_local_issue_lease"
+                  >
+                    <input type="hidden" name="issue_ref" value={issue.id} />
+                    <button type="submit" class="secondary">Release Lease</button>
+                  </form>
 
                   <div class="tracker-runtime-card">
                     <p class="metric-label">Runtime Details</p>
@@ -559,6 +596,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <p class="metric-label">Last Error</p>
                       <pre><%= runtime.retry_error %></pre>
                     </div>
+                  </div>
+
+                  <div class="tracker-runtime-card">
+                    <p class="metric-label">Local Comments</p>
+
+                    <%= if issue.comments == [] do %>
+                      <p class="empty-state">No local comments yet.</p>
+                    <% else %>
+                      <div :for={comment <- issue.comments} class="tracker-runtime-note">
+                        <p class="metric-label"><%= comment.created_at || "timestamp unavailable" %></p>
+                        <pre><%= comment.body %></pre>
+                      </div>
+                    <% end %>
                   </div>
 
                   <div :if={issue.description} class="code-panel">
@@ -756,7 +806,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
       assigned_to_worker: Map.get(issue, :assigned_to_worker, true),
       claimed_by: issue.claimed_by,
       claimed_at: local_issue_timestamp(issue.claimed_at),
-      lease_expires_at: local_issue_timestamp(issue.lease_expires_at)
+      lease_expires_at: local_issue_timestamp(issue.lease_expires_at),
+      lease_status: issue |> Local.lease_status() |> Atom.to_string(),
+      comments: local_issue_comments(Map.get(issue, :comments, []))
     }
   end
 
@@ -815,6 +867,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp local_issue_blocked_by([]), do: "none"
   defp local_issue_blocked_by(values), do: Enum.join(values, ", ")
 
+  defp local_issue_comments(comments) when is_list(comments) do
+    Enum.map(comments, fn comment ->
+      %{
+        body: Map.get(comment, :body),
+        created_at: local_issue_timestamp(Map.get(comment, :created_at))
+      }
+    end)
+  end
+
+  defp local_issue_comments(_comments), do: []
+
   defp local_issue_count(tracker, states) when is_list(states) do
     wanted =
       states
@@ -823,6 +886,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     Enum.count(tracker.issues, fn issue ->
       MapSet.member?(wanted, normalize_issue_state(issue.state))
+    end)
+  end
+
+  defp local_runnable_issue_count(tracker) do
+    wanted =
+      ["Todo", "Rework"]
+      |> Enum.map(&normalize_issue_state/1)
+      |> MapSet.new()
+
+    Enum.count(tracker.issues, fn issue ->
+      MapSet.member?(wanted, normalize_issue_state(issue.state)) and
+        local_issue_lease_status(issue) != "active"
     end)
   end
 
@@ -898,6 +973,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
     cond do
       local_issue_retrying?(issue, payload) -> "Retrying"
       local_issue_running?(issue, payload) -> "Running"
+      local_issue_lease_status(issue) == "active" -> "Leased"
+      local_issue_lease_status(issue) == "expired" -> "Lease Expired"
       true -> "Idle"
     end
   end
@@ -908,9 +985,25 @@ defmodule SymphonyElixirWeb.DashboardLive do
     cond do
       local_issue_retrying?(issue, payload) -> "#{base} state-badge-danger"
       local_issue_running?(issue, payload) -> "#{base} state-badge-active"
-      true -> "#{base} state-badge-warning"
+      local_issue_lease_status(issue) == "active" -> "#{base} state-badge-warning"
+      local_issue_lease_status(issue) == "expired" -> "#{base} state-badge-danger"
+      true -> base
     end
   end
+
+  defp local_issue_lease_status(issue) do
+    Map.get(issue, :lease_status) || "unclaimed"
+  end
+
+  defp local_issue_lease_label(issue) do
+    case local_issue_lease_status(issue) do
+      "active" -> "active"
+      "expired" -> "expired"
+      _ -> "unclaimed"
+    end
+  end
+
+  defp local_issue_release_available?(issue), do: local_issue_lease_status(issue) != "unclaimed"
 
   defp local_issue_running?(issue, payload) do
     Enum.any?(payload.running, fn entry ->

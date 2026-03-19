@@ -30,6 +30,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   @local_issue_create_tool "local_issue_create"
   @local_issue_state_tool "local_issue_state"
   @local_issue_comment_tool "local_issue_comment"
+  @local_issue_release_tool "local_issue_release"
 
   @local_issue_list_description """
   List issues from Symphony's local JSON tracker store.
@@ -42,6 +43,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   """
   @local_issue_comment_description """
   Append a comment to an issue in Symphony's local JSON tracker store.
+  """
+  @local_issue_release_description """
+  Release an active or expired lease on an issue in Symphony's local JSON tracker store.
   """
 
   @local_issue_list_input_schema %{
@@ -121,6 +125,18 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   }
 
+  @local_issue_release_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["issueRef"],
+    "properties" => %{
+      "issueRef" => %{
+        "type" => "string",
+        "description" => "Issue id or identifier."
+      }
+    }
+  }
+
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
     case {Config.tracker_kind(), tool} do
@@ -138,6 +154,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
       {"local", @local_issue_comment_tool} ->
         execute_local_issue_comment(arguments)
+
+      {"local", @local_issue_release_tool} ->
+        execute_local_issue_release(arguments)
 
       {_kind, other} ->
         failure_response(%{
@@ -182,6 +201,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
             "name" => @local_issue_comment_tool,
             "description" => @local_issue_comment_description,
             "inputSchema" => @local_issue_comment_input_schema
+          },
+          %{
+            "name" => @local_issue_release_tool,
+            "description" => @local_issue_release_description,
+            "inputSchema" => @local_issue_release_input_schema
           }
         ]
 
@@ -244,6 +268,19 @@ defmodule SymphonyElixir.Codex.DynamicTool do
          :ok <- Local.create_comment(issue_ref, body) do
       success_response(%{
         "message" => "Appended comment to #{issue_ref}",
+        "issueRef" => issue_ref
+      })
+    else
+      {:error, reason} ->
+        failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp execute_local_issue_release(arguments) do
+    with {:ok, issue_ref} <- normalize_local_issue_release_arguments(arguments),
+         :ok <- Local.release_issue_claim(issue_ref) do
+      success_response(%{
+        "message" => "Released lease on #{issue_ref}",
         "issueRef" => issue_ref
       })
     else
@@ -319,6 +356,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp normalize_local_issue_comment_arguments(_arguments), do: {:error, :invalid_local_issue_comment_arguments}
+
+  defp normalize_local_issue_release_arguments(%{} = arguments),
+    do: required_string_arg(arguments, "issueRef", :missing_local_issue_ref)
+
+  defp normalize_local_issue_release_arguments(_arguments), do: {:error, :invalid_local_issue_release_arguments}
 
   defp normalize_query(arguments) do
     case Map.get(arguments, "query") || Map.get(arguments, :query) do
@@ -555,6 +597,14 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   end
 
+  defp tool_error_payload(:invalid_local_issue_release_arguments) do
+    %{
+      "error" => %{
+        "message" => "`local_issue_release` expects an object with `issueRef`."
+      }
+    }
+  end
+
   defp tool_error_payload(:invalid_local_issue_states) do
     %{
       "error" => %{
@@ -639,9 +689,27 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       "assigneeId" => issue.assignee_id,
       "labels" => issue.labels || [],
       "blockedBy" => issue.blocked_by || [],
+      "comments" => comments_payload(Map.get(issue, :comments, [])),
       "assignedToWorker" => Map.get(issue, :assigned_to_worker, true),
+      "claimedBy" => issue.claimed_by,
+      "claimedAt" => iso8601(issue.claimed_at),
+      "leaseExpiresAt" => iso8601(issue.lease_expires_at),
+      "leaseStatus" => issue |> Local.lease_status() |> Atom.to_string(),
       "createdAt" => iso8601(issue.created_at),
       "updatedAt" => iso8601(issue.updated_at)
+    }
+  end
+
+  defp comments_payload(comments) when is_list(comments) do
+    Enum.map(comments, &comment_payload/1)
+  end
+
+  defp comments_payload(_comments), do: []
+
+  defp comment_payload(comment) when is_map(comment) do
+    %{
+      "body" => Map.get(comment, :body),
+      "createdAt" => iso8601(Map.get(comment, :created_at))
     }
   end
 
