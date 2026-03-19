@@ -132,6 +132,210 @@ defmodule SymphonyElixir.LocalTrackerTest do
     assert [%{"body" => "migration finished"}] = Enum.map(issue["comments"], &Map.take(&1, ["body"]))
   end
 
+  test "local tracker stores attachment metadata and resolves uploaded files" do
+    tracker_dir = Path.dirname(Workflow.workflow_file_path())
+    tracker_path = Path.join(tracker_dir, "issues.json")
+    upload_source = Path.join(tracker_dir, "scope-notes.md")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: tracker_path,
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    File.write!(tracker_path, Jason.encode!(%{"issues" => []}, pretty: true))
+    File.write!(upload_source, "# local scope\n\nmove attachments into the tracker\n")
+
+    assert {:ok, attachment} = Local.store_attachment(upload_source, "../scope-notes.md", "text/markdown")
+    assert attachment["filename"] == "scope-notes.md"
+    assert attachment["content_type"] == "text/markdown"
+    assert is_integer(attachment["byte_size"])
+    assert Path.type(attachment["path"]) == :relative
+
+    assert {:ok, %Issue{identifier: "LOCAL-1", attachments: [stored_attachment]}} =
+             Local.create_issue(%{
+               "title" => "Keep uploaded specs inside the local tracker",
+               "attachments" => [attachment]
+             })
+
+    assert stored_attachment["filename"] == "scope-notes.md"
+
+    assert {:ok,
+            %{
+              path: attachment_path,
+              filename: "scope-notes.md",
+              content_type: "text/markdown"
+            }} = Local.fetch_attachment_file("LOCAL-1", stored_attachment["id"])
+
+    assert File.read!(attachment_path) =~ "move attachments into the tracker"
+
+    {:ok, payload} = File.read(tracker_path)
+    decoded = Jason.decode!(payload)
+    [issue] = decoded["issues"]
+    [persisted_attachment] = issue["attachments"]
+
+    assert persisted_attachment["filename"] == "scope-notes.md"
+    assert persisted_attachment["path"] == stored_attachment["path"]
+  end
+
+  test "local tracker normalizes attachment payloads and surfaces attachment errors" do
+    tracker_dir = Path.dirname(Workflow.workflow_file_path())
+    tracker_path = Path.join(tracker_dir, "issues.json")
+    upload_source = Path.join(tracker_dir, "upload.txt")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: tracker_path,
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    File.write!(
+      tracker_path,
+      Jason.encode!(
+        %{
+          "issues" => [
+            %{
+              "id" => "issue-raw-1",
+              "identifier" => "LOCAL-RAW-1",
+              "title" => "Raw attachment payload",
+              "state" => "Todo",
+              "attachments" => [
+                %{
+                  "id" => 9,
+                  "filename" => 101,
+                  "content_type" => "  ",
+                  "byte_size" => "12",
+                  "path" => "stored/raw.txt",
+                  "uploaded_at" => 123
+                },
+                %{
+                  "id" => "attachment-invalid-size",
+                  "filename" => "invalid-size.txt",
+                  "byte_size" => "oops",
+                  "path" => "stored/invalid-size.txt"
+                },
+                %{"filename" => "missing-fields"},
+                "noise"
+              ]
+            }
+          ]
+        },
+        pretty: true
+      )
+    )
+
+    assert {:ok, [%Issue{attachments: [attachment, invalid_size_attachment]}]} = Local.list_issues()
+    assert attachment["id"] == "9"
+    assert attachment["filename"] == "101"
+    assert attachment["content_type"] == nil
+    assert attachment["byte_size"] == 12
+    assert attachment["uploaded_at"] == "123"
+    assert invalid_size_attachment["byte_size"] == nil
+
+    assert {:error, :invalid_issue_attachments} =
+             Local.create_issue(%{"title" => "Bad attachments", "attachments" => "oops"})
+
+    File.write!(upload_source, "attachment cleanup")
+
+    assert {:ok, attachment_without_type} = Local.store_attachment(upload_source, "two-arity.txt")
+    assert attachment_without_type["content_type"] == nil
+    assert :ok = Local.discard_attachment(attachment_without_type)
+
+    assert {:ok, cleanup_attachment} = Local.store_attachment(upload_source, "   ", "   ")
+    assert cleanup_attachment["filename"] == "attachment"
+    assert cleanup_attachment["content_type"] == nil
+    assert :ok = Local.discard_attachment(cleanup_attachment)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: nil,
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    assert {:error, :missing_local_tracker_path} = Local.store_attachment(upload_source, "missing-path.txt")
+
+    bad_parent = Path.join(tracker_dir, "not-a-dir")
+    File.write!(bad_parent, "no directory here")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: Path.join(bad_parent, "issues.json"),
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    assert {:error, {:local_tracker_attachment_write_failed, :enotdir}} =
+             Local.store_attachment(upload_source, "bad-parent.txt")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: tracker_path,
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    assert {:error, {:local_tracker_attachment_write_failed, :enoent}} =
+             Local.store_attachment(Path.join(tracker_dir, "missing-upload.txt"), "missing-upload.txt")
+
+    assert {:ok, stored_attachment} = Local.store_attachment(upload_source, "notes.txt", "text/plain")
+
+    assert {:ok, %Issue{identifier: "LOCAL-1"}} =
+             Local.create_issue(%{
+               "title" => "Attachment error coverage",
+               "attachments" => [stored_attachment]
+             })
+
+    assert {:error, :attachment_not_found} = Local.fetch_attachment_file("LOCAL-1", "missing-attachment")
+    assert {:error, :issue_not_found} = Local.fetch_attachment_file("LOCAL-MISSING", stored_attachment["id"])
+    assert :ok = Local.discard_attachment(%{"id" => "missing-path"})
+
+    assert :ok = Local.discard_attachment(stored_attachment)
+    assert {:error, :attachment_file_missing} = Local.fetch_attachment_file("LOCAL-1", stored_attachment["id"])
+
+    assert {:ok, sibling_attachment} = Local.store_attachment(upload_source, "sibling.txt", "text/plain")
+
+    attachment_dir =
+      Path.join([
+        Path.dirname(tracker_path),
+        "issues_attachments",
+        Path.dirname(sibling_attachment["path"])
+      ])
+
+    File.write!(Path.join(attachment_dir, "keep.txt"), "keep me")
+    assert :ok = Local.discard_attachment(sibling_attachment)
+    assert File.exists?(Path.join(attachment_dir, "keep.txt"))
+
+    File.write!(
+      tracker_path,
+      Jason.encode!(
+        %{
+          "issues" => [
+            %{
+              "id" => "issue-escape-1",
+              "identifier" => "LOCAL-ESCAPE-1",
+              "title" => "Escape path",
+              "state" => "Todo",
+              "attachments" => [
+                %{
+                  "id" => "attachment-escape",
+                  "filename" => "escape.txt",
+                  "path" => "../escape.txt"
+                }
+              ]
+            }
+          ]
+        },
+        pretty: true
+      )
+    )
+
+    assert {:error, :invalid_attachment_path} =
+             Local.fetch_attachment_file("LOCAL-ESCAPE-1", "attachment-escape")
+  end
+
   test "local tracker treats a missing file as an empty queue and surfaces invalid payloads" do
     tracker_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "missing-issues.json")
 

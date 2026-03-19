@@ -7,10 +7,12 @@ defmodule SymphonyElixir.Tracker.Local do
 
   alias SymphonyElixir.{Config, Linear.Issue}
 
+  @attachments_key "attachments"
   @comments_key "comments"
   @issues_key "issues"
   @default_identifier_prefix "LOCAL"
   @default_id_prefix "local"
+  @default_attachment_id_prefix "attachment"
 
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
@@ -64,6 +66,61 @@ defmodule SymphonyElixir.Tracker.Local do
     with :ok <- validate_create_issue_attrs(attrs),
          {:ok, path} <- tracker_path() do
       create_issue_in_tracker(path, attrs)
+    end
+  end
+
+  @spec store_attachment(String.t(), String.t(), String.t() | nil) :: {:ok, map()} | {:error, term()}
+  def store_attachment(source_path, filename, content_type \\ nil)
+      when is_binary(source_path) and is_binary(filename) do
+    with {:ok, tracker_path} <- tracker_path(),
+         {:ok, attachment_root} <- attachment_root(tracker_path),
+         attachment_id <- generate_attachment_id(),
+         sanitized_filename <- sanitize_filename(filename),
+         target_path <- attachment_target_path(attachment_root, attachment_id, sanitized_filename),
+         :ok <- File.mkdir_p(Path.dirname(target_path)),
+         :ok <- copy_attachment_file(source_path, target_path),
+         {:ok, %File.Stat{size: byte_size}} <- File.stat(target_path) do
+      {:ok,
+       %{
+         "id" => attachment_id,
+         "filename" => sanitized_filename,
+         "content_type" => normalize_content_type(content_type),
+         "byte_size" => byte_size,
+         "path" => Path.relative_to(target_path, attachment_root),
+         "uploaded_at" => now_iso8601()
+       }}
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec discard_attachment(map()) :: :ok
+  def discard_attachment(attachment) when is_map(attachment) do
+    with {:ok, tracker_path} <- tracker_path(),
+         {:ok, attachment_path} <- resolve_attachment_path(tracker_path, attachment) do
+      File.rm(attachment_path)
+      prune_empty_attachment_dirs(Path.dirname(attachment_path), attachment_root_path(tracker_path))
+    end
+
+    :ok
+  end
+
+  @spec fetch_attachment_file(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def fetch_attachment_file(issue_ref, attachment_id)
+      when is_binary(issue_ref) and is_binary(attachment_id) do
+    with {:ok, tracker_path} <- tracker_path(),
+         {:ok, issue_maps} <- load_issue_maps(),
+         {:ok, issue_map} <- find_issue_map(issue_maps, issue_ref),
+         {:ok, attachment} <- find_attachment(issue_map, attachment_id),
+         {:ok, attachment_path} <- resolve_attachment_path(tracker_path, attachment),
+         :ok <- attachment_file_exists(attachment_path) do
+      {:ok,
+       %{
+         attachment: attachment,
+         path: attachment_path,
+         filename: attachment["filename"],
+         content_type: normalize_content_type(attachment["content_type"])
+       }}
     end
   end
 
@@ -296,6 +353,7 @@ defmodule SymphonyElixir.Tracker.Local do
          {:ok, priority} <- priority_attr(attrs),
          {:ok, state} <- state_attr(attrs),
          {:ok, labels} <- labels_attr(attrs),
+         {:ok, attachments} <- attachments_attr(attrs),
          {:ok, assigned_to_worker} <- assigned_to_worker_attr(attrs),
          {:ok, identifier} <-
            unique_string_attr_or_generate(
@@ -322,6 +380,7 @@ defmodule SymphonyElixir.Tracker.Local do
          "priority" => priority,
          "state" => state,
          "labels" => labels,
+         "attachments" => attachments,
          "assigned_to_worker" => assigned_to_worker,
          "created_at" => now,
          "updated_at" => now
@@ -346,6 +405,7 @@ defmodule SymphonyElixir.Tracker.Local do
       assignee_id: map_string(issue, "assignee_id"),
       claimed_by: map_string(issue, "claimed_by"),
       blocked_by: normalize_blocked_by(Map.get(issue, "blocked_by")),
+      attachments: normalize_attachments(Map.get(issue, @attachments_key)),
       labels: normalize_string_list(Map.get(issue, "labels")),
       assigned_to_worker: Map.get(issue, "assigned_to_worker", true) != false,
       created_at: parse_datetime(Map.get(issue, "created_at")),
@@ -428,6 +488,33 @@ defmodule SymphonyElixir.Tracker.Local do
   defp list_value_to_string(value) when is_atom(value), do: Atom.to_string(value)
   defp list_value_to_string(_value), do: nil
 
+  defp normalize_attachments(value) when is_list(value) do
+    value
+    |> Enum.map(&normalize_attachment/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_attachments(_value), do: []
+
+  defp normalize_attachment(attachment) when is_map(attachment) do
+    %{
+      "id" => map_string(attachment, "id"),
+      "filename" => map_string(attachment, "filename"),
+      "content_type" => normalize_content_type(Map.get(attachment, "content_type")),
+      "byte_size" => parse_non_negative_integer(Map.get(attachment, "byte_size")),
+      "path" => map_string(attachment, "path"),
+      "uploaded_at" => map_string(attachment, "uploaded_at")
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+    |> case do
+      %{"id" => _id, "filename" => _filename, "path" => _path} = normalized -> normalized
+      _ -> nil
+    end
+  end
+
+  defp normalize_attachment(_attachment), do: nil
+
   defp parse_priority(value) when is_integer(value), do: value
 
   defp parse_priority(value) when is_binary(value) do
@@ -438,6 +525,17 @@ defmodule SymphonyElixir.Tracker.Local do
   end
 
   defp parse_priority(_value), do: nil
+
+  defp parse_non_negative_integer(value) when is_integer(value) and value >= 0, do: value
+
+  defp parse_non_negative_integer(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {parsed, ""} when parsed >= 0 -> parsed
+      _ -> nil
+    end
+  end
+
+  defp parse_non_negative_integer(_value), do: nil
 
   defp parse_datetime(value) when is_binary(value) do
     case DateTime.from_iso8601(value) do
@@ -541,6 +639,20 @@ defmodule SymphonyElixir.Tracker.Local do
     {:ok, labels}
   end
 
+  defp attachments_attr(attrs) do
+    attachments =
+      case Map.get(attrs, @attachments_key) do
+        value when is_list(value) -> normalize_attachments(value)
+        nil -> []
+        _value -> :invalid
+      end
+
+    case attachments do
+      :invalid -> {:error, :invalid_issue_attachments}
+      normalized -> {:ok, normalized}
+    end
+  end
+
   defp blocked_by_attr(attrs) do
     case Map.get(attrs, "blocked_by") do
       value when is_list(value) ->
@@ -628,6 +740,118 @@ defmodule SymphonyElixir.Tracker.Local do
       _ -> 180_000
     end
   end
+
+  defp attachment_root(tracker_path) when is_binary(tracker_path) do
+    attachment_root = attachment_root_path(tracker_path)
+
+    case File.mkdir_p(attachment_root) do
+      :ok -> {:ok, attachment_root}
+      {:error, reason} -> {:error, {:local_tracker_attachment_write_failed, reason}}
+    end
+  end
+
+  defp attachment_root_path(tracker_path) when is_binary(tracker_path) do
+    tracker_path
+    |> Path.basename(Path.extname(tracker_path))
+    |> then(&Path.join(Path.dirname(tracker_path), "#{&1}_attachments"))
+  end
+
+  defp attachment_target_path(attachment_root, attachment_id, filename)
+       when is_binary(attachment_root) and is_binary(attachment_id) and is_binary(filename) do
+    Path.join([attachment_root, attachment_id, filename])
+  end
+
+  defp copy_attachment_file(source_path, target_path) do
+    case File.cp(source_path, target_path) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:local_tracker_attachment_write_failed, reason}}
+    end
+  end
+
+  defp resolve_attachment_path(tracker_path, attachment) when is_binary(tracker_path) and is_map(attachment) do
+    attachment_root = attachment_root_path(tracker_path)
+
+    case map_string(attachment, "path") do
+      path when is_binary(path) ->
+        expanded = Path.expand(path, attachment_root)
+
+        if String.starts_with?(expanded, attachment_root <> "/") or expanded == attachment_root do
+          {:ok, expanded}
+        else
+          {:error, :invalid_attachment_path}
+        end
+
+      _ ->
+        {:error, :attachment_not_found}
+    end
+  end
+
+  defp attachment_file_exists(path) when is_binary(path) do
+    if File.exists?(path), do: :ok, else: {:error, :attachment_file_missing}
+  end
+
+  defp prune_empty_attachment_dirs(path, stop_path) when is_binary(path) and is_binary(stop_path) do
+    cond do
+      path == stop_path ->
+        :ok
+
+      not String.starts_with?(path, stop_path <> "/") ->
+        :ok
+
+      true ->
+        case File.ls(path) do
+          {:ok, []} ->
+            File.rmdir(path)
+            prune_empty_attachment_dirs(Path.dirname(path), stop_path)
+
+          _ ->
+            :ok
+        end
+    end
+  end
+
+  defp find_issue_map(issue_maps, issue_ref) when is_list(issue_maps) and is_binary(issue_ref) do
+    case Enum.find(issue_maps, &issue_matches_ref?(&1, issue_ref)) do
+      %{} = issue_map -> {:ok, issue_map}
+      nil -> {:error, :issue_not_found}
+    end
+  end
+
+  defp find_attachment(issue_map, attachment_id) when is_map(issue_map) and is_binary(attachment_id) do
+    issue_map
+    |> Map.get(@attachments_key, [])
+    |> normalize_attachments()
+    |> Enum.find(&(Map.get(&1, "id") == attachment_id))
+    |> case do
+      nil -> {:error, :attachment_not_found}
+      attachment -> {:ok, attachment}
+    end
+  end
+
+  defp generate_attachment_id do
+    "#{@default_attachment_id_prefix}-#{System.unique_integer([:positive])}"
+  end
+
+  defp sanitize_filename(filename) when is_binary(filename) do
+    filename
+    |> Path.basename()
+    |> String.trim()
+    |> case do
+      "" -> "attachment"
+      basename -> basename
+    end
+  end
+
+  defp normalize_content_type(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> case do
+      "" -> nil
+      content_type -> content_type
+    end
+  end
+
+  defp normalize_content_type(_value), do: nil
 
   defp tracker_path do
     case Config.local_tracker_path() do

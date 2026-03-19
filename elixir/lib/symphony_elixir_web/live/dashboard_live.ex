@@ -8,11 +8,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixir.{Config, Tracker.Local}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
+  @issue_upload_max_entries 6
+  @issue_upload_max_file_size 20_000_000
 
   @impl true
   def mount(_params, _session, socket) do
     socket =
       socket
+      |> allow_upload(:issue_files,
+        accept: :any,
+        max_entries: @issue_upload_max_entries,
+        max_file_size: @issue_upload_max_file_size
+      )
       |> assign(:payload, load_payload())
       |> assign(:local_issue_states, local_issue_states())
       |> assign(:local_tracker_feedback, nil)
@@ -45,17 +52,31 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_event("create_local_issue", %{"issue" => params}, socket) do
-    case Local.create_issue(local_issue_attrs(params)) do
-      {:ok, issue} ->
-        ObservabilityPubSub.broadcast_update()
+    case store_uploaded_attachments(socket) do
+      {:ok, attachments} ->
+        case Local.create_issue(local_issue_attrs(params, attachments)) do
+          {:ok, issue} ->
+            ObservabilityPubSub.broadcast_update()
 
-        {:noreply,
-         socket
-         |> assign(:local_tracker_feedback, %{
-           kind: :info,
-           message: "Created #{issue.identifier}"
-         })
-         |> refresh_local_tracker(issue.id || issue.identifier)}
+            {:noreply,
+             socket
+             |> assign(:local_tracker_feedback, %{
+               kind: :info,
+               message: created_issue_feedback(issue, attachments)
+             })
+             |> refresh_local_tracker(issue.id || issue.identifier)}
+
+          {:error, reason} ->
+            discard_stored_attachments(attachments)
+
+            {:noreply,
+             socket
+             |> assign(:local_tracker_feedback, %{
+               kind: :error,
+               message: local_tracker_error_message("Failed to create local issue", reason)
+             })
+             |> refresh_local_tracker()}
+        end
 
       {:error, reason} ->
         {:noreply,
@@ -521,6 +542,32 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </div>
                   </dl>
 
+                  <div class="tracker-attachment-card">
+                    <div class="tracker-attachment-header">
+                      <p class="metric-label">Issue Files</p>
+                      <span class="muted"><%= local_issue_attachment_summary(issue.attachments) %></span>
+                    </div>
+
+                    <%= if issue.attachments == [] do %>
+                      <p class="empty-state">No files uploaded for this issue yet.</p>
+                    <% else %>
+                      <div class="tracker-attachment-list">
+                        <article :for={attachment <- issue.attachments} class="tracker-attachment-item">
+                          <div class="tracker-attachment-copy">
+                            <strong><%= attachment.filename %></strong>
+                            <span class="muted">
+                              <%= local_issue_attachment_meta(attachment) %>
+                            </span>
+                          </div>
+
+                          <a class="secondary tracker-attachment-link" href={attachment.download_path}>
+                            Download
+                          </a>
+                        </article>
+                      </div>
+                    <% end %>
+                  </div>
+
                   <div class="tracker-runtime-card">
                     <p class="metric-label">Runtime Details</p>
                     <dl class="tracker-detail-list tracker-runtime-list">
@@ -618,6 +665,39 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   ></textarea>
                 </div>
 
+                <div class="field-stack">
+                  <label for="local-issue-files">Issue Files</label>
+                  <div class="upload-panel" phx-drop-target={@uploads.issue_files.ref}>
+                    <.live_file_input id="local-issue-files" upload={@uploads.issue_files} />
+                    <p class="upload-copy">
+                      Upload specs, screenshots, or implementation notes directly into the local tracker.
+                    </p>
+                    <p class="upload-hint">
+                      Up to <%= issue_upload_max_entries() %> files, <%= format_bytes(issue_upload_max_file_size()) %> each.
+                    </p>
+                  </div>
+
+                  <%= for err <- upload_errors(@uploads.issue_files) do %>
+                    <p class="tracker-feedback tracker-feedback-error"><%= upload_error_message(err) %></p>
+                  <% end %>
+
+                  <div :if={@uploads.issue_files.entries != []} class="upload-entry-list">
+                    <%= for entry <- @uploads.issue_files.entries do %>
+                      <article class="upload-entry">
+                        <div class="tracker-attachment-copy">
+                          <strong><%= entry.client_name %></strong>
+                          <span class="muted"><%= format_bytes(entry.client_size) %></span>
+                        </div>
+                        <span class="muted"><%= entry.progress %>%</span>
+                      </article>
+
+                      <%= for err <- upload_errors(@uploads.issue_files, entry) do %>
+                        <p class="tracker-feedback tracker-feedback-error"><%= upload_error_message(err) %></p>
+                      <% end %>
+                    <% end %>
+                  </div>
+                </div>
+
                 <button type="submit">Create issue</button>
               </form>
             </div>
@@ -639,6 +719,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp snapshot_timeout_ms do
     Endpoint.config(:snapshot_timeout_ms) || 15_000
   end
+
+  defp issue_upload_max_entries, do: @issue_upload_max_entries
+  defp issue_upload_max_file_size, do: @issue_upload_max_file_size
 
   defp completed_runtime_seconds(payload) do
     payload.codex_totals.seconds_running || 0
@@ -752,6 +835,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
       updated_at: local_issue_timestamp(issue.updated_at),
       branch_name: issue.branch_name,
       blocked_by: issue.blocked_by || [],
+      attachments:
+        issue
+        |> Map.get(:attachments, [])
+        |> Enum.map(&local_issue_attachment_payload(&1, issue)),
       url: issue.url,
       assigned_to_worker: Map.get(issue, :assigned_to_worker, true),
       claimed_by: issue.claimed_by,
@@ -760,7 +847,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     }
   end
 
-  defp local_issue_attrs(params) when is_map(params) do
+  defp local_issue_attrs(params, attachments) when is_map(params) and is_list(attachments) do
     params
     |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
     |> Enum.map(fn
@@ -768,6 +855,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       {"priority", value} -> {"priority", parse_optional_integer(value)}
       entry -> entry
     end)
+    |> Kernel.++([{"attachments", attachments}])
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
   end
@@ -781,6 +869,114 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp parse_optional_integer(value) when is_integer(value), do: value
   defp parse_optional_integer(_value), do: nil
+
+  defp local_issue_attachment_payload(attachment, issue) when is_map(attachment) do
+    %{
+      id: attachment["id"],
+      filename: attachment["filename"] || "attachment",
+      content_type: attachment["content_type"],
+      byte_size: attachment["byte_size"],
+      uploaded_at: attachment["uploaded_at"],
+      download_path: local_issue_attachment_download_path(issue, attachment)
+    }
+  end
+
+  defp local_issue_attachment_download_path(issue, attachment) do
+    issue_ref = issue.id || issue.identifier
+    attachment_id = attachment["id"]
+
+    if is_binary(issue_ref) and is_binary(attachment_id) do
+      "/api/v1/local-issues/#{URI.encode(issue_ref)}/attachments/#{URI.encode(attachment_id)}"
+    end
+  end
+
+  defp local_issue_attachment_summary([]), do: "0 files"
+
+  defp local_issue_attachment_summary(attachments) when is_list(attachments) do
+    count = length(attachments)
+    total_bytes = Enum.reduce(attachments, 0, &(Map.get(&1, :byte_size, 0) + &2))
+    "#{count} file#{if count == 1, do: "", else: "s"} · #{format_bytes(total_bytes)}"
+  end
+
+  defp local_issue_attachment_meta(attachment) do
+    [attachment.content_type, format_bytes(attachment.byte_size), attachment.uploaded_at]
+    |> Enum.reject(&nil_or_empty?/1)
+    |> Enum.join(" · ")
+  end
+
+  defp format_bytes(value) when is_integer(value) and value >= 1_000_000_000,
+    do: :io_lib.format("~.1f GB", [value / 1_000_000_000]) |> IO.iodata_to_binary()
+
+  defp format_bytes(value) when is_integer(value) and value >= 1_000_000,
+    do: :io_lib.format("~.1f MB", [value / 1_000_000]) |> IO.iodata_to_binary()
+
+  defp format_bytes(value) when is_integer(value) and value >= 1_000,
+    do: :io_lib.format("~.1f KB", [value / 1_000]) |> IO.iodata_to_binary()
+
+  defp format_bytes(value) when is_integer(value) and value >= 0, do: "#{value} B"
+  defp format_bytes(_value), do: "n/a"
+
+  defp upload_error_message(:too_large), do: "One of the selected files exceeds the upload limit."
+  defp upload_error_message(:too_many_files), do: "Too many files selected for a single issue."
+  defp upload_error_message(:not_accepted), do: "A selected file type is not accepted."
+
+  defp upload_error_message(:external_client_failure),
+    do: "The browser failed to finish uploading one of the selected files."
+
+  defp upload_error_message(other), do: "Upload failed: #{inspect(other)}"
+
+  defp created_issue_feedback(issue, []) do
+    "Created #{issue.identifier}"
+  end
+
+  defp created_issue_feedback(issue, attachments) do
+    "Created #{issue.identifier} with #{length(attachments)} file#{if length(attachments) == 1, do: "", else: "s"}"
+  end
+
+  defp store_uploaded_attachments(socket) do
+    upload = socket.assigns.uploads.issue_files
+
+    if upload_has_errors?(upload) do
+      {:error, :invalid_issue_attachments}
+    else
+      socket
+      |> consume_issue_upload_entries()
+      |> normalize_uploaded_attachments()
+    end
+  end
+
+  defp consume_issue_upload_entries(socket) do
+    consume_uploaded_entries(socket, :issue_files, fn %{path: path}, entry ->
+      case Local.store_attachment(path, entry.client_name, entry.client_type) do
+        {:ok, attachment} -> {:ok, {:ok, attachment}}
+        {:error, reason} -> {:ok, {:error, reason}}
+      end
+    end)
+  end
+
+  defp normalize_uploaded_attachments(results) do
+    case Enum.split_with(results, &match?({:ok, _attachment}, &1)) do
+      {oks, []} ->
+        {:ok, Enum.map(oks, fn {:ok, attachment} -> attachment end)}
+
+      {oks, [{:error, reason} | _rest]} ->
+        oks
+        |> Enum.map(fn {:ok, attachment} -> attachment end)
+        |> discard_stored_attachments()
+
+        {:error, reason}
+    end
+  end
+
+  defp upload_has_errors?(upload) do
+    upload.errors != [] or Enum.any?(upload.entries, &(not &1.valid?))
+  end
+
+  defp discard_stored_attachments(attachments) do
+    Enum.each(attachments, &Local.discard_attachment/1)
+  end
+
+  defp nil_or_empty?(value), do: value in [nil, ""]
 
   defp local_issue_states do
     (["Backlog"] ++ Config.linear_active_states() ++ Config.linear_terminal_states())

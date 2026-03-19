@@ -207,6 +207,7 @@ defmodule SymphonyElixirWeb.Presenter do
       branch_name: issue.branch_name,
       url: issue.url,
       blocked_by: issue.blocked_by || [],
+      attachments: tracked_issue_attachments(issue),
       assigned_to_worker: Map.get(issue, :assigned_to_worker, true),
       created_at: iso8601(issue.created_at),
       updated_at: iso8601(issue.updated_at),
@@ -214,6 +215,30 @@ defmodule SymphonyElixirWeb.Presenter do
       claimed_at: iso8601(issue.claimed_at),
       lease_expires_at: iso8601(issue.lease_expires_at)
     }
+  end
+
+  defp tracked_issue_attachments(issue) do
+    issue
+    |> Map.get(:attachments, [])
+    |> Enum.map(fn attachment ->
+      %{
+        id: attachment["id"],
+        filename: attachment["filename"],
+        content_type: attachment["content_type"],
+        byte_size: attachment["byte_size"],
+        uploaded_at: attachment["uploaded_at"],
+        download_url: attachment_download_url(issue, attachment)
+      }
+    end)
+  end
+
+  defp attachment_download_url(issue, attachment) do
+    issue_ref = issue.id || issue.identifier
+    attachment_id = attachment["id"]
+
+    if is_binary(issue_ref) and is_binary(attachment_id) do
+      "/api/v1/local-issues/#{URI.encode(issue_ref)}/attachments/#{URI.encode(attachment_id)}"
+    end
   end
 
   defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do

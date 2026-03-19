@@ -414,6 +414,57 @@ pre,
   border-top: 1px solid var(--line);
 }
 
+.tracker-attachment-card {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.tracker-attachment-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.tracker-attachment-list,
+.upload-entry-list {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 0.8rem;
+}
+
+.tracker-attachment-item,
+.upload-entry {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.9rem;
+  align-items: center;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.tracker-attachment-copy {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.tracker-attachment-copy strong,
+.tracker-attachment-copy span {
+  overflow-wrap: anywhere;
+}
+
+.tracker-attachment-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 6.5rem;
+}
+
 .tracker-runtime-list {
   margin-top: 0.75rem;
 }
@@ -453,6 +504,38 @@ pre,
   display: grid;
   gap: 0.75rem;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.upload-panel {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.9rem;
+  border: 1px dashed rgba(16, 163, 127, 0.34);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(16, 163, 127, 0.05) 0%, rgba(255, 255, 255, 0.94) 100%);
+}
+
+.upload-panel input[type="file"] {
+  padding: 0.5rem 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.upload-copy,
+.upload-hint {
+  margin: 0;
+}
+
+.upload-copy {
+  color: var(--ink);
+  font-size: 0.92rem;
+}
+
+.upload-hint {
+  color: var(--muted);
+  font-size: 0.82rem;
 }
 
 .issue-state-form {

@@ -705,6 +705,17 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert local_issue_payload["tracked"]["claimed_by"] == "runtime-a"
     assert local_issue_payload["tracked"]["lease_expires_at"] == "2026-03-19T00:05:00Z"
 
+    upload =
+      file_input(view, "#local-issue-create-form", :issue_files, [
+        %{
+          name: "architecture-notes.md",
+          content: "repo-native local tracker upload",
+          type: "text/markdown"
+        }
+      ])
+
+    assert render_upload(upload, "architecture-notes.md") =~ "architecture-notes.md"
+
     created_html =
       view
       |> form("#local-issue-create-form",
@@ -718,8 +729,9 @@ defmodule SymphonyElixir.ExtensionsTest do
       )
       |> render_submit()
 
-    assert created_html =~ "Created LOCAL-2"
+    assert created_html =~ "Created LOCAL-2 with 1 file"
     assert created_html =~ "Add a local issue CLI entry"
+    assert created_html =~ "architecture-notes.md"
 
     updated_html =
       view
@@ -737,9 +749,24 @@ defmodule SymphonyElixir.ExtensionsTest do
         issue["identifier"] == "LOCAL-1" and issue["state"] == "Done"
       end) and
         Enum.any?(issues, fn issue ->
-          issue["identifier"] == "LOCAL-2" and issue["state"] == "In Progress"
+          issue["identifier"] == "LOCAL-2" and issue["state"] == "In Progress" and
+            match?([%{"filename" => "architecture-notes.md"}], issue["attachments"])
         end)
     end)
+
+    created_issue_payload = json_response(get(build_conn(), "/api/v1/LOCAL-2"), 200)
+    [attachment_payload] = created_issue_payload["tracked"]["attachments"]
+
+    assert attachment_payload["filename"] == "architecture-notes.md"
+    assert attachment_payload["content_type"] == "text/markdown"
+
+    attachment_conn = get(build_conn(), attachment_payload["download_url"])
+
+    assert response(attachment_conn, 200) == "repo-native local tracker upload"
+
+    assert Enum.any?(Plug.Conn.get_resp_header(attachment_conn, "content-disposition"), fn value ->
+             String.contains?(value, "architecture-notes.md")
+           end)
   end
 
   test "dashboard liveview renders an unavailable state without crashing" do
