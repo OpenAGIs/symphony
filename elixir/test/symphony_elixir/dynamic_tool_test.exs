@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.Codex.DynamicToolTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Codex.DynamicTool
+  alias SymphonyElixir.{Codex.DynamicTool, Tracker.Local}
 
   setup do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
@@ -63,7 +63,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              "local_issue_list",
              "local_issue_create",
              "local_issue_state",
-             "local_issue_comment"
+             "local_issue_comment",
+             "local_issue_release"
            ]
   end
 
@@ -106,10 +107,15 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                  "assigneeId" => nil,
                  "blockedBy" => [],
                  "branchName" => nil,
+                 "claimedAt" => nil,
+                 "claimedBy" => nil,
+                 "comments" => [],
                  "createdAt" => nil,
                  "description" => nil,
                  "id" => "local-1",
                  "identifier" => "LOCAL-1",
+                 "leaseExpiresAt" => nil,
+                 "leaseStatus" => "unclaimed",
                  "labels" => ["ops"],
                  "priority" => nil,
                  "state" => "Todo",
@@ -138,6 +144,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert created_payload["message"] == "Created LOCAL-2"
     assert created_payload["issue"]["identifier"] == "LOCAL-2"
     assert created_payload["issue"]["state"] == "In Progress"
+    assert created_payload["issue"]["leaseStatus"] == "unclaimed"
+    assert created_payload["issue"]["comments"] == []
 
     commented = DynamicTool.execute("local_issue_comment", %{"issueRef" => "LOCAL-2", "body" => "Work started"})
 
@@ -149,11 +157,19 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert moved["success"] == true
     assert decode_text_payload(moved)["message"] == "Updated LOCAL-2 -> Done"
 
+    assert :ok = Local.claim_issue("LOCAL-2", "runtime-a", ttl_ms: 60_000)
+
+    released = DynamicTool.execute("local_issue_release", %{"issueRef" => "LOCAL-2"})
+
+    assert released["success"] == true
+    assert decode_text_payload(released)["message"] == "Released lease on LOCAL-2"
+
     decoded_tracker = tracker_path |> File.read!() |> Jason.decode!()
 
     assert get_in(decoded_tracker, ["issues", Access.at(1), "identifier"]) == "LOCAL-2"
     assert get_in(decoded_tracker, ["issues", Access.at(1), "state"]) == "Done"
     assert get_in(decoded_tracker, ["issues", Access.at(1), "comments", Access.at(0), "body"]) == "Work started"
+    assert get_in(decoded_tracker, ["issues", Access.at(1), "claimed_by"]) == nil
   end
 
   test "local issue tools validate inputs and report supported tools" do
@@ -186,6 +202,15 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              }
            }
 
+    invalid_release = DynamicTool.execute("local_issue_release", "LOCAL-2")
+    assert invalid_release["success"] == false
+
+    assert decode_text_payload(invalid_release) == %{
+             "error" => %{
+               "message" => "`local_issue_release` expects an object with `issueRef`."
+             }
+           }
+
     missing_ref = DynamicTool.execute("local_issue_state", %{"state" => "Done"})
     assert missing_ref["success"] == false
 
@@ -205,7 +230,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                  "local_issue_list",
                  "local_issue_create",
                  "local_issue_state",
-                 "local_issue_comment"
+                 "local_issue_comment",
+                 "local_issue_release"
                ]
              }
            }

@@ -12,16 +12,32 @@ defmodule SymphonyElixir.Tracker.Local do
   @default_identifier_prefix "LOCAL"
   @default_id_prefix "local"
 
+  @type lease_status :: :active | :expired | :unclaimed
+
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
     with {:ok, issues} <- fetch_issues_by_states(Config.linear_active_states()) do
-      {:ok, Enum.reject(issues, &issue_claim_active?/1)}
+      {:ok, Enum.reject(issues, &(lease_status(&1) == :active))}
     end
   end
 
   @spec list_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def list_issues do
     issue_entries()
+  end
+
+  @spec lease_status(Issue.t(), DateTime.t()) :: lease_status()
+  def lease_status(%Issue{} = issue, now \\ DateTime.utc_now()) do
+    cond do
+      lease_active?(issue.claimed_by, issue.lease_expires_at, now) ->
+        :active
+
+      is_binary(issue.claimed_by) and issue.claimed_by != "" ->
+        :expired
+
+      true ->
+        :unclaimed
+    end
   end
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
@@ -347,6 +363,7 @@ defmodule SymphonyElixir.Tracker.Local do
       claimed_by: map_string(issue, "claimed_by"),
       blocked_by: normalize_blocked_by(Map.get(issue, "blocked_by")),
       labels: normalize_string_list(Map.get(issue, "labels")),
+      comments: normalize_comments(Map.get(issue, @comments_key)),
       assigned_to_worker: Map.get(issue, "assigned_to_worker", true) != false,
       created_at: parse_datetime(Map.get(issue, "created_at")),
       updated_at: parse_datetime(Map.get(issue, "updated_at")),
@@ -360,8 +377,34 @@ defmodule SymphonyElixir.Tracker.Local do
   defp normalize_blocked_by(value) when is_list(value), do: value
   defp normalize_blocked_by(_value), do: []
 
-  defp issue_claim_active?(%Issue{} = issue) do
-    lease_active?(issue.claimed_by, issue.lease_expires_at, DateTime.utc_now())
+  defp normalize_comments(comments) when is_list(comments) do
+    comments
+    |> Enum.reduce([], fn
+      %{} = comment, acc ->
+        case normalize_comment(comment) do
+          nil -> acc
+          normalized -> [normalized | acc]
+        end
+
+      _comment, acc ->
+        acc
+    end)
+    |> Enum.reverse()
+  end
+
+  defp normalize_comments(_comments), do: []
+
+  defp normalize_comment(comment) when is_map(comment) do
+    case map_string(comment, "body") do
+      body when is_binary(body) and body != "" ->
+        %{
+          body: body,
+          created_at: parse_datetime(Map.get(comment, "created_at"))
+        }
+
+      _ ->
+        nil
+    end
   end
 
   defp issue_claim_available?(issue, owner, now) when is_map(issue) and is_binary(owner) do

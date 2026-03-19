@@ -3,6 +3,11 @@ defmodule SymphonyElixir.Issue do
   Normalized tracker issue representation used by the orchestrator.
   """
 
+  @type comment :: %{
+          body: String.t(),
+          created_at: DateTime.t() | nil
+        }
+
   defstruct [
     :id,
     :identifier,
@@ -16,6 +21,7 @@ defmodule SymphonyElixir.Issue do
     :claimed_by,
     blocked_by: [],
     labels: [],
+    comments: [],
     assigned_to_worker: true,
     created_at: nil,
     updated_at: nil,
@@ -36,6 +42,7 @@ defmodule SymphonyElixir.Issue do
           claimed_by: String.t() | nil,
           blocked_by: [String.t()],
           labels: [String.t()],
+          comments: [comment()],
           assigned_to_worker: boolean(),
           created_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil,

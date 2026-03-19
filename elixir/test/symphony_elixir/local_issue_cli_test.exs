@@ -64,6 +64,7 @@ defmodule SymphonyElixir.LocalIssueCLITest do
 
     assert list_output =~ "LOCAL-1 [Todo] Switch the tracker to local"
     assert list_output =~ "labels=go, migration"
+    assert list_output =~ "lease=unclaimed"
 
     state_output =
       capture_io(fn ->
@@ -159,6 +160,7 @@ defmodule SymphonyElixir.LocalIssueCLITest do
 
     assert list_output =~ "priority=n/a"
     assert list_output =~ "updated=n/a"
+    assert list_output =~ "lease=unclaimed"
     assert list_output =~ "tracked locally"
   end
 
@@ -183,7 +185,7 @@ defmodule SymphonyElixir.LocalIssueCLITest do
               "title" => "Claimed issue",
               "state" => "Todo",
               "claimed_by" => "runtime-a",
-              "lease_expires_at" => "2026-03-19T12:00:00Z"
+              "lease_expires_at" => "2099-03-19T12:00:00Z"
             }
           ]
         },
@@ -196,7 +198,8 @@ defmodule SymphonyElixir.LocalIssueCLITest do
         assert :ok = LocalIssueCLI.evaluate(["list"])
       end)
 
-    assert list_output =~ "claim=runtime-a expires=2026-03-19T12:00:00Z"
+    assert list_output =~ "lease=active"
+    assert list_output =~ "claim=runtime-a expires=2099-03-19T12:00:00Z"
 
     release_output =
       capture_io(fn ->

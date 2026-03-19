@@ -193,7 +193,7 @@ defmodule SymphonyElixir.LocalIssueCLI do
 
     Enum.each(issues, fn issue ->
       IO.puts("#{issue.identifier} [#{issue.state}] #{issue.title}")
-      IO.puts("  id=#{issue.id} priority=#{format_priority(issue.priority)} updated=#{format_datetime(issue.updated_at)}")
+      IO.puts("  id=#{issue.id} priority=#{format_priority(issue.priority)} updated=#{format_datetime(issue.updated_at)} lease=#{format_lease_status(issue)}")
 
       if issue.labels != [] do
         IO.puts("  labels=#{Enum.join(issue.labels, ", ")}")
@@ -211,6 +211,12 @@ defmodule SymphonyElixir.LocalIssueCLI do
 
   defp format_priority(nil), do: "n/a"
   defp format_priority(priority), do: Integer.to_string(priority)
+
+  defp format_lease_status(issue) do
+    issue
+    |> Local.lease_status()
+    |> Atom.to_string()
+  end
 
   defp format_datetime(nil), do: "n/a"
 
