@@ -97,6 +97,7 @@ defmodule SymphonyElixir.TestSupport do
           capabilities: [],
           max_risk_level: nil,
           max_issue_budget: nil,
+          max_retry_attempts: 10,
           max_concurrent_agents_by_state: %{},
           max_concurrent_agents_by_capability: %{},
           max_concurrent_agents_by_risk: %{},
@@ -144,6 +145,7 @@ defmodule SymphonyElixir.TestSupport do
     capabilities = Keyword.get(config, :capabilities)
     max_risk_level = Keyword.get(config, :max_risk_level)
     max_issue_budget = Keyword.get(config, :max_issue_budget)
+    max_retry_attempts = Keyword.get(config, :max_retry_attempts)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
     max_concurrent_agents_by_capability = Keyword.get(config, :max_concurrent_agents_by_capability)
     max_concurrent_agents_by_risk = Keyword.get(config, :max_concurrent_agents_by_risk)
@@ -195,6 +197,7 @@ defmodule SymphonyElixir.TestSupport do
         "  capabilities: #{yaml_value(capabilities)}",
         "  max_risk_level: #{yaml_value(max_risk_level)}",
         "  max_issue_budget: #{yaml_value(max_issue_budget)}",
+        "  max_retry_attempts: #{yaml_value(max_retry_attempts)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
         "  max_concurrent_agents_by_capability: #{yaml_value(max_concurrent_agents_by_capability)}",
         "  max_concurrent_agents_by_risk: #{yaml_value(max_concurrent_agents_by_risk)}",

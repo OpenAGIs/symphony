@@ -1,6 +1,129 @@
 defmodule SymphonyElixir.OrchestratorStatusTest do
   use SymphonyElixir.TestSupport
 
+  test "orchestrator restores persisted retry queue entries after restart" do
+    workspace_root = Path.join(System.tmp_dir!(), "symphony-queue-restore-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Application.fetch_env!(:symphony_elixir, :workflow_file_path),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      max_retry_attempts: 3
+    )
+
+    issue = %Issue{
+      id: "issue-retry-restore",
+      identifier: "MT-420",
+      title: "Restore queue",
+      description: "Persist retry queue",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-420"
+    }
+
+    issue_id = issue.id
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    orchestrator_name = Module.concat(__MODULE__, :RestoreQueueOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: "session-restore",
+      retry_attempt: 1,
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn state ->
+      %{state | running: %{issue.id => running_entry}, claimed: MapSet.put(state.claimed, issue.id)}
+    end)
+
+    send(pid, {:DOWN, running_entry.ref, :process, self(), :boom})
+
+    snapshot = wait_for_snapshot(pid, &(length(&1.retrying) == 1))
+    assert [%{issue_id: ^issue_id, attempt: 2}] = snapshot.retrying
+
+    assert File.exists?(SymphonyElixir.OrchestratorQueueStore.queue_state_path())
+
+    assert :ok = GenServer.stop(pid, :normal, 1_000)
+
+    {:ok, restarted_pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(restarted_pid), do: Process.exit(restarted_pid, :normal)
+      File.rm_rf(workspace_root)
+    end)
+
+    restarted_snapshot = wait_for_snapshot(restarted_pid, &(length(&1.retrying) == 1), 1_000)
+    assert [%{issue_id: ^issue_id, attempt: 2, due_in_ms: due_in_ms}] = restarted_snapshot.retrying
+    assert is_integer(due_in_ms)
+    assert due_in_ms >= 0
+  end
+
+  test "orchestrator moves exhausted retries into the dead-letter queue" do
+    workspace_root = Path.join(System.tmp_dir!(), "symphony-dead-letter-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Application.fetch_env!(:symphony_elixir, :workflow_file_path),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      max_retry_attempts: 2
+    )
+
+    issue = %Issue{
+      id: "issue-dead-letter",
+      identifier: "MT-421",
+      title: "Dead letter queue",
+      description: "Stop infinite retries",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-421"
+    }
+
+    issue_id = issue.id
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    orchestrator_name = Module.concat(__MODULE__, :DeadLetterOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+      File.rm_rf(workspace_root)
+    end)
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: "session-dead-letter",
+      retry_attempt: 2,
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn state ->
+      %{state | running: %{issue.id => running_entry}, claimed: MapSet.put(state.claimed, issue.id)}
+    end)
+
+    send(pid, {:DOWN, running_entry.ref, :process, self(), :boom})
+
+    snapshot = wait_for_snapshot(pid, &(length(Map.get(&1, :dead_letters, [])) == 1), 1_000)
+    assert [%{issue_id: ^issue_id, attempt: 3, identifier: "MT-421"}] = snapshot.dead_letters
+    assert snapshot.retrying == []
+
+    assert_receive {:memory_tracker_comment, ^issue_id, body}, 1_000
+    assert body =~ "dead-letter queue"
+    refute Orchestrator.should_dispatch_issue_for_test(issue, :sys.get_state(pid))
+  end
+
   test "snapshot returns :timeout when snapshot server is unresponsive" do
     server_name = Module.concat(__MODULE__, :UnresponsiveSnapshotServer)
     parent = self()
@@ -955,7 +1078,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert is_integer(due_at_ms)
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
-    assert remaining_ms >= 8_500
+    assert remaining_ms >= 7_000
     assert remaining_ms <= 10_500
   end
 

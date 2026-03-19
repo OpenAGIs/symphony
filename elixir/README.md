@@ -128,6 +128,7 @@ agent:
     high: 1
   max_concurrent_agents_by_budget:
     5: 1
+  max_retry_attempts: 10
 codex:
   command: codex app-server
 workflow:
@@ -140,34 +141,9 @@ workflow:
     max_attempts: 3
 ---
 
-You are working on a {{ tracker.display_name }} issue {{ issue.identifier }}.
-
-Title: {{ issue.title }} Body: {{ issue.description }}
+You are working on a locally tracked issue {{ issue.identifier }}.
 
 Workflow mode: {{ workflow.strategy.mode }}
-```
-
-Local-only example:
-
-```md
----
-tracker:
-  kind: local
-  path: ./local-issues.json
-  active_states: ["Todo", "In Progress"]
-  terminal_states: ["Done", "Closed", "Cancelled", "Canceled", "Duplicate"]
-workspace:
-  root: ~/code/workspaces
-server:
-  host: 127.0.0.1
-  port: 4000
-agent:
-  max_concurrent_agents: 4
-codex:
-  command: codex app-server
----
-
-You are working on a locally tracked issue {{ issue.identifier }}.
 
 Title: {{ issue.title }}
 Body: {{ issue.description }}
@@ -191,6 +167,10 @@ Notes:
   `externalSandbox`, `workspaceWrite`.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+- `agent.max_retry_attempts` caps failure/continuation retry scheduling before Symphony moves the
+  issue into an on-disk dead-letter queue. Default: `10`.
+- Retry and dead-letter queue state persist under `workspace.root/.symphony/orchestrator_queue.json`
+  so restarts can restore pending retries without a separate database.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, body, and tracker display name.
 - Set `server.host` / `server.port` to make the browser dashboard available during local runs.

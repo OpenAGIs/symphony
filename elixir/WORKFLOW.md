@@ -39,6 +39,7 @@ agent:
     high: 1
   max_concurrent_agents_by_budget:
     5: 1
+  max_retry_attempts: 10
 codex:
   # Keep app-server env defaults; avoid inheriting restrictive parent shell sandbox vars.
   command: codex --config model_reasoning_effort=medium app-server

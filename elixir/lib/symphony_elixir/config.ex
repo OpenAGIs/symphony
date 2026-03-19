@@ -28,6 +28,7 @@ defmodule SymphonyElixir.Config do
   @default_max_concurrent_agents 10
   @default_agent_max_turns 20
   @default_max_retry_backoff_ms 300_000
+  @default_agent_max_retry_attempts 10
   @default_codex_command "codex app-server"
   @default_codex_turn_timeout_ms 3_600_000
   @default_codex_read_timeout_ms 5_000
@@ -108,6 +109,10 @@ defmodule SymphonyElixir.Config do
                                  max_issue_budget: [
                                    type: {:or, [:pos_integer, nil]},
                                    default: nil
+                                 ],
+                                 max_retry_attempts: [
+                                   type: :pos_integer,
+                                   default: @default_agent_max_retry_attempts
                                  ],
                                  max_concurrent_agents_by_state: [
                                    type: {:map, :string, :pos_integer},
@@ -383,6 +388,10 @@ defmodule SymphonyElixir.Config do
   end
 
   def max_concurrent_agents_for_budget(_budget), do: max_concurrent_agents()
+  @spec agent_max_retry_attempts() :: pos_integer()
+  def agent_max_retry_attempts do
+    get_in(validated_workflow_options(), [:agent, :max_retry_attempts])
+  end
 
   @spec agent_max_turns() :: pos_integer()
   def agent_max_turns do
@@ -670,6 +679,7 @@ defmodule SymphonyElixir.Config do
     |> put_if_present(:capabilities, capability_values(Map.get(section, "capabilities")))
     |> put_if_present(:max_risk_level, risk_level_value(Map.get(section, "max_risk_level")))
     |> put_if_present(:max_issue_budget, positive_integer_value(Map.get(section, "max_issue_budget")))
+    |> put_if_present(:max_retry_attempts, positive_integer_value(Map.get(section, "max_retry_attempts")))
     |> put_if_present(
       :max_concurrent_agents_by_state,
       state_limits_value(Map.get(section, "max_concurrent_agents_by_state"))
