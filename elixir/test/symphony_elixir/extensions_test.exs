@@ -264,6 +264,24 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert {:error, {:unsupported_tracker_adapter, "github"}} =
              SymphonyElixir.Tracker.fetch_candidate_issues()
+
+    assert {:error, {:unsupported_tracker_adapter, "github"}} =
+             SymphonyElixir.Tracker.fetch_issues_by_states(["Todo"])
+
+    assert {:error, {:unsupported_tracker_adapter, "github"}} =
+             SymphonyElixir.Tracker.fetch_issue_states_by_ids(["issue-1"])
+
+    assert {:error, {:unsupported_tracker_adapter, "github"}} =
+             SymphonyElixir.Tracker.create_comment("issue-1", "body")
+
+    assert {:error, {:unsupported_tracker_adapter, "github"}} =
+             SymphonyElixir.Tracker.ensure_workpad_comment("issue-1", "body")
+
+    assert {:error, {:unsupported_tracker_adapter, "github"}} =
+             SymphonyElixir.Tracker.update_comment("comment-1", "body")
+
+    assert {:error, {:unsupported_tracker_adapter, "github"}} =
+             SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
   end
 
   test "linear adapter delegates reads and validates mutation responses" do

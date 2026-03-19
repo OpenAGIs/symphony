@@ -5,10 +5,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   require Logger
 
-  alias SymphonyElixir.Issue, as: TrackerIssue
+  alias SymphonyElixir.{Config, Issue, Tracker, Workpad}
   alias SymphonyElixir.Linear.Client
   alias SymphonyElixir.Tracker.Local
-  alias SymphonyElixir.{Config, Tracker, Workpad}
 
   @linear_graphql_tool "linear_graphql"
   @linear_workpad_tool "linear_workpad"
@@ -199,39 +198,38 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
-    case {Config.tracker_kind(), tool} do
-      {"linear", @linear_graphql_tool} ->
-        execute_linear_graphql(arguments, opts)
-
-      {"linear", @linear_workpad_tool} ->
-        execute_linear_workpad(arguments, opts)
-
-      {"linear", @linear_update_issue_state_tool} ->
-        execute_linear_update_issue_state(arguments, opts)
-
-      {"local", @local_issue_list_tool} ->
-        execute_local_issue_list(arguments)
-
-      {"local", @local_issue_create_tool} ->
-        execute_local_issue_create(arguments)
-
-      {"local", @local_issue_state_tool} ->
-        execute_local_issue_state(arguments)
-
-      {"local", @local_issue_comment_tool} ->
-        execute_local_issue_comment(arguments)
-
-      {"local", @local_issue_release_tool} ->
-        execute_local_issue_release(arguments)
-
-      {_kind, other} ->
-        failure_response(%{
-          "error" => %{
-            "message" => "Unsupported dynamic tool: #{inspect(other)}.",
-            "supportedTools" => supported_tool_names()
-          }
-        })
+    case Config.tracker_kind() do
+      "linear" -> execute_linear_tool(tool, arguments, opts)
+      "local" -> execute_local_tool(tool, arguments)
+      _kind -> unsupported_tool_response(tool)
     end
+  end
+
+  defp execute_linear_tool(@linear_graphql_tool, arguments, opts),
+    do: execute_linear_graphql(arguments, opts)
+
+  defp execute_linear_tool(@linear_workpad_tool, arguments, opts),
+    do: execute_linear_workpad(arguments, opts)
+
+  defp execute_linear_tool(@linear_update_issue_state_tool, arguments, opts),
+    do: execute_linear_update_issue_state(arguments, opts)
+
+  defp execute_linear_tool(other, _arguments, _opts), do: unsupported_tool_response(other)
+
+  defp execute_local_tool(@local_issue_list_tool, arguments), do: execute_local_issue_list(arguments)
+  defp execute_local_tool(@local_issue_create_tool, arguments), do: execute_local_issue_create(arguments)
+  defp execute_local_tool(@local_issue_state_tool, arguments), do: execute_local_issue_state(arguments)
+  defp execute_local_tool(@local_issue_comment_tool, arguments), do: execute_local_issue_comment(arguments)
+  defp execute_local_tool(@local_issue_release_tool, arguments), do: execute_local_issue_release(arguments)
+  defp execute_local_tool(other, _arguments), do: unsupported_tool_response(other)
+
+  defp unsupported_tool_response(other) do
+    failure_response(%{
+      "error" => %{
+        "message" => "Unsupported dynamic tool: #{inspect(other)}.",
+        "supportedTools" => supported_tool_names()
+      }
+    })
   end
 
   @spec tool_specs() :: [map()]
@@ -569,7 +567,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp normalize_linear_workpad_arguments(_arguments), do: {:error, :invalid_workpad_arguments}
 
-  defp normalize_issue_state_arguments(arguments, %TrackerIssue{id: current_issue_id})
+  defp normalize_issue_state_arguments(arguments, %Issue{id: current_issue_id})
        when is_map(arguments) do
     requested_issue_id = Map.get(arguments, "issueId") || Map.get(arguments, :issueId) || current_issue_id
 
@@ -585,7 +583,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         Map.get(current_issue, :id) || Map.get(current_issue, "id")
       end
 
-    normalize_issue_state_arguments(arguments, %TrackerIssue{id: current_issue_id})
+    normalize_issue_state_arguments(arguments, %Issue{id: current_issue_id})
   end
 
   defp normalize_issue_state_arguments(_arguments, _current_issue),
@@ -664,7 +662,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp fetch_current_issue(tracker, issue_id) when is_binary(issue_id) do
     case tracker.fetch_issue_states_by_ids([issue_id]) do
-      {:ok, [%TrackerIssue{} = issue | _]} -> {:ok, issue}
+      {:ok, [%Issue{} = issue | _]} -> {:ok, issue}
       {:ok, []} -> {:error, :issue_not_found}
       {:error, reason} -> {:error, {:issue_lookup_failed, reason}}
     end

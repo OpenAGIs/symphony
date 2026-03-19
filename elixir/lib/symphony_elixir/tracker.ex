@@ -4,8 +4,8 @@ defmodule SymphonyElixir.Tracker do
   """
 
   alias SymphonyElixir.Config
-  alias SymphonyElixir.Tracker.Local
   alias SymphonyElixir.Linear.Adapter, as: LinearAdapter
+  alias SymphonyElixir.Tracker.Local
   alias SymphonyElixir.Tracker.Memory
   alias SymphonyElixir.Tracker.Unsupported
 
@@ -82,7 +82,7 @@ defmodule SymphonyElixir.Tracker do
       "local" -> Local
       "memory" -> Memory
       "linear" -> LinearAdapter
-      kind -> adapter_for_kind(kind)
+      kind -> adapter_for_kind(to_string(kind))
     end
   end
 
@@ -90,6 +90,4 @@ defmodule SymphonyElixir.Tracker do
     Application.get_env(:symphony_elixir, :tracker_adapter_modules, %{})
     |> Map.get(kind, Unsupported)
   end
-
-  defp adapter_for_kind(_kind), do: Unsupported
 end

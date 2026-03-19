@@ -7,49 +7,70 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 > Symphony Elixir is prototype software intended for evaluation only and is presented as-is.
 > We recommend implementing your own hardened version based on `SPEC.md`.
 
-## Screenshot
+## Quick Start
 
-![Symphony Elixir screenshot](../.github/media/elixir-screenshot.png)
+The bundled `WORKFLOW.md` is already set up for the simplest local path:
 
-## How it works
+- `tracker.kind: local`
+- `tracker.path: ./local-issues.json`
+- dashboard on `http://127.0.0.1:4000/`
+- `hooks.after_create` clones `https://github.com/OpenAGIs/symphony.git`
+  unless `SYMPHONY_REPO_URL` overrides it
 
-1. Polls the configured tracker for candidate work
-2. Creates an isolated workspace per issue
-3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
-   workspace
-4. Sends a workflow prompt to Codex
-5. Keeps Codex working on the issue until the work is done
+From this directory:
+
+```bash
+mise trust
+mise install
+mise exec -- mix setup
+mise exec -- mix build
+mise exec -- ./bin/symphony ./WORKFLOW.md
+```
+
+Then open `http://127.0.0.1:4000/`.
+
+## What To Edit In `WORKFLOW.md`
+
+For most teams, only these sections need attention:
+
+1. `tracker`
+   Use `local` for a repo-native JSON tracker or `linear` for a Linear project.
+2. `workspace.root`
+   Choose where Symphony should create per-issue workspaces.
+3. `server`
+   Keep or change the dashboard host and port.
+4. `hooks.after_create`
+   Define how a fresh workspace should be bootstrapped.
+5. `agent`
+   Set concurrency, turn limits, and retry policy.
+6. `codex`
+   Pick the Codex command, timeouts, and sandbox defaults.
+
+## Daily Flow
+
+1. Start Symphony with `./bin/symphony ./WORKFLOW.md`.
+2. Open the dashboard and create or update local issues.
+3. Watch running, retrying, and dead-lettered work in one place.
+4. Use dashboard file uploads, search, and board view to manage local work.
+5. Check `.symphony/workpad.md` inside each workspace for plan, validation, and handoff notes.
+
+## Tracker-Aware Tools
 
 During app-server sessions, Symphony serves tracker-aware client-side tools:
 
-- `linear_graphql` and `linear_workpad` when the tracker is `linear`
+- `linear_graphql`, `linear_workpad`, and `linear_update_issue_state`
+  when the tracker is `linear`
 - `local_issue_list`, `local_issue_create`, `local_issue_state`,
-  `local_issue_comment`, and `local_issue_release` when the tracker is `local`
+  `local_issue_comment`, and `local_issue_release` when the tracker is
+  `local`
 
-If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
-Symphony stops the active agent for that issue and cleans up matching workspaces.
+If a claimed issue moves to a terminal state (`Done`, `Closed`,
+`Cancelled`, or `Duplicate`), Symphony stops the active agent for that
+issue and cleans up matching workspaces.
 
-## How to use it
+## Screenshot
 
-1. Make sure your codebase is set up to work well with agents: see
-   [Harness engineering](https://openai.com/index/harness-engineering/).
-2. Pick a tracker backend.
-   - `linear`: use a Linear personal token and project slug.
-   - `local`: point Symphony at a local JSON issue store and run without Linear.
-3. Copy this directory's `WORKFLOW.md` to your repo.
-4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill is only relevant when you keep `tracker.kind: linear`.
-   - Use `linear_graphql` for raw GraphQL operations such as uploads or custom mutations.
-   - Use `linear_workpad` to find, create, and update the single persistent
-     `## Codex Workpad` comment for an issue.
-5. Customize the copied `WORKFLOW.md` file for your project.
-   - For `linear`, get your project's slug by right-clicking the project and copying its URL. The
-     slug is part of the URL.
-   - For `local`, set `tracker.path` to a writable JSON file.
-   - When using `linear`, note that the stock workflow depends on non-standard Linear issue
-     statuses: "Rework", "Human Review", and "Merging". You can customize them in
-     Team Settings → Workflow in Linear.
-6. Follow the instructions below to install the required runtime dependencies and start the service.
+![Symphony Elixir screenshot](../.github/media/elixir-screenshot.png)
 
 ## Prerequisites
 

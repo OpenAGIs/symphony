@@ -65,7 +65,10 @@ defmodule SymphonyElixir.Orchestrator do
       codex_rate_limits: nil
     }
 
-    run_terminal_workspace_cleanup()
+    if Keyword.get(opts, :startup_cleanup?, true) do
+      run_terminal_workspace_cleanup()
+    end
+
     state = restore_persisted_queue_state(state)
     persist_queue_state(state)
     :ok = schedule_tick(initial_poll_delay_ms)
@@ -1102,7 +1105,7 @@ defmodule SymphonyElixir.Orchestrator do
          %{
            attempt: retry_entry.attempt,
            identifier: retry_entry.identifier,
-           retry_at_unix_ms: retry_entry.retry_at_unix_ms,
+           retry_at_unix_ms: Map.get(retry_entry, :retry_at_unix_ms, System.system_time(:millisecond)),
            error: Map.get(retry_entry, :error)
          }}
       end)

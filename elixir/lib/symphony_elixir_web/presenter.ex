@@ -219,6 +219,7 @@ defmodule SymphonyElixirWeb.Presenter do
       branch_name: issue.branch_name,
       url: issue.url,
       blocked_by: issue.blocked_by || [],
+      attachments: attachments_payload(issue),
       assigned_to_worker: Map.get(issue, :assigned_to_worker, true),
       created_at: iso8601(issue.created_at),
       updated_at: iso8601(issue.updated_at),
@@ -228,6 +229,43 @@ defmodule SymphonyElixirWeb.Presenter do
       lease_status: issue |> Local.lease_status() |> Atom.to_string(),
       comments: comments_payload(Map.get(issue, :comments, []))
     }
+  end
+
+  defp attachments_payload(issue) do
+    issue
+    |> Map.get(:attachments, [])
+    |> Enum.map(fn attachment ->
+      preview_kind = Local.attachment_preview_kind(attachment)
+
+      %{
+        id: attachment["id"],
+        filename: attachment["filename"],
+        content_type: attachment["content_type"],
+        byte_size: attachment["byte_size"],
+        uploaded_at: attachment["uploaded_at"],
+        preview_kind: Atom.to_string(preview_kind),
+        preview_url: attachment_preview_url(issue, attachment),
+        download_url: attachment_download_url(issue, attachment)
+      }
+    end)
+  end
+
+  defp attachment_download_url(issue, attachment) do
+    issue_ref = issue.id || issue.identifier
+    attachment_id = attachment["id"]
+
+    if is_binary(issue_ref) and is_binary(attachment_id) do
+      "/api/v1/local-issues/#{URI.encode(issue_ref)}/attachments/#{URI.encode(attachment_id)}"
+    end
+  end
+
+  defp attachment_preview_url(issue, attachment) do
+    issue_ref = issue.id || issue.identifier
+    attachment_id = attachment["id"]
+
+    if is_binary(issue_ref) and is_binary(attachment_id) do
+      "/api/v1/local-issues/#{URI.encode(issue_ref)}/attachments/#{URI.encode(attachment_id)}/preview"
+    end
   end
 
   defp comments_payload(comments) when is_list(comments) do

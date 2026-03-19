@@ -22,7 +22,7 @@ server:
   port: 4000
 hooks:
   after_create: |
-    REPO_URL="${SYMPHONY_REPO_URL:-https://github.com/OpenAGIs/OpenAGI.ai.git}"
+    REPO_URL="${SYMPHONY_REPO_URL:-https://github.com/OpenAGIs/symphony.git}"
     git clone "$REPO_URL" .
     git config user.email "${SYMPHONY_GIT_EMAIL:-automation@example.invalid}"
     git config user.name "${SYMPHONY_GIT_NAME:-Symphony Automation}"

@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.WorkerRuntimeOutputTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Issue
   alias SymphonyElixir.WorkerRuntimeOutput
 
   test "worker runtime output persists metadata events and artifacts" do
@@ -32,7 +33,7 @@ defmodule SymphonyElixir.WorkerRuntimeOutputTest do
           event: :session_started,
           timestamp: DateTime.utc_now(),
           nested: [%{phase: :boot}],
-          issue: %SymphonyElixir.Linear.Issue{identifier: "MT/Output-1", state: "Todo"}
+          issue: %Issue{identifier: "MT/Output-1", state: "Todo"}
         })
 
       :ok = WorkerRuntimeOutput.finish(context, {:error, :blocked})

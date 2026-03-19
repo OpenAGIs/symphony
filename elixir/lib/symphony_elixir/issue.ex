@@ -8,6 +8,8 @@ defmodule SymphonyElixir.Issue do
           created_at: DateTime.t() | nil
         }
 
+  @type attachment :: map()
+
   defstruct [
     :id,
     :identifier,
@@ -20,6 +22,7 @@ defmodule SymphonyElixir.Issue do
     :assignee_id,
     :claimed_by,
     blocked_by: [],
+    attachments: [],
     labels: [],
     comments: [],
     assigned_to_worker: true,
@@ -41,6 +44,7 @@ defmodule SymphonyElixir.Issue do
           assignee_id: String.t() | nil,
           claimed_by: String.t() | nil,
           blocked_by: [String.t()],
+          attachments: [attachment()],
           labels: [String.t()],
           comments: [comment()],
           assigned_to_worker: boolean(),

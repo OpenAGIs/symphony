@@ -307,24 +307,22 @@ defmodule SymphonyElixir.AppServerTest do
   end
 
   defp match_dynamic_tools?(dynamic_tools) when is_list(dynamic_tools) do
-    Enum.any?(dynamic_tools, fn tool ->
-      tool["name"] == "linear_graphql" and
-        get_in(tool, ["inputSchema", "required"]) == ["query"] and
-        String.contains?(tool["description"] || "", "Linear")
-    end) and
-      Enum.any?(dynamic_tools, fn tool ->
-        tool["name"] == "linear_workpad" and
-          get_in(tool, ["inputSchema", "required"]) == ["action"] and
-          String.contains?(tool["description"] || "", "workpad")
-      end) and
-      Enum.any?(dynamic_tools, fn tool ->
-        tool["name"] == "linear_update_issue_state" and
-          get_in(tool, ["inputSchema", "required"]) == ["state"] and
-          String.contains?(tool["description"] || "", "approval flow")
-      end)
+    dynamic_tool_matches?(dynamic_tools, "linear_graphql", ["query"], "Linear") and
+      dynamic_tool_matches?(dynamic_tools, "linear_workpad", ["action"], "workpad") and
+      dynamic_tool_matches?(dynamic_tools, "linear_update_issue_state", ["state"], "approval flow")
   end
 
   defp match_dynamic_tools?(_dynamic_tools), do: false
+
+  defp dynamic_tool_matches?(dynamic_tools, name, required, description_fragment)
+       when is_list(dynamic_tools) and is_binary(name) and is_list(required) and
+              is_binary(description_fragment) do
+    Enum.any?(dynamic_tools, fn tool ->
+      tool["name"] == name and
+        get_in(tool, ["inputSchema", "required"]) == required and
+        String.contains?(tool["description"] || "", description_fragment)
+    end)
+  end
 
   test "app server auto-approves MCP tool approval prompts when approval policy is never" do
     test_root =
