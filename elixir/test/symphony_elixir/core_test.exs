@@ -543,7 +543,7 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-resume"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :ContinuationOrchestrator)
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name, initial_poll_delay_ms: 60_000)
 
     on_exit(fn ->
       if Process.alive?(pid) do
@@ -583,7 +583,7 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-crash"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :CrashRetryOrchestrator)
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name, initial_poll_delay_ms: 60_000)
 
     on_exit(fn ->
       if Process.alive?(pid) do
@@ -623,7 +623,7 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-crash-initial"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :InitialCrashRetryOrchestrator)
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name, initial_poll_delay_ms: 60_000)
 
     on_exit(fn ->
       if Process.alive?(pid) do
@@ -689,6 +689,35 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Ticket S-1 Refactor backend request path"
     assert prompt =~ "labels=backend"
     assert prompt =~ "attempt=3"
+  end
+
+  test "prompt builder exposes workflow dsl context to templates" do
+    workflow_prompt =
+      "mode={{ workflow.strategy.mode }} gate={{ workflow.acceptance[0].id }} " <>
+        "approval={{ workflow.approvals.required }} retry={{ workflow.retry.max_attempts }} " <>
+        "writeback={{ workflow.writeback.channel }}"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      prompt: workflow_prompt,
+      workflow_strategy: %{mode: "autonomous"},
+      workflow_acceptance: [%{id: "validation", required: true}],
+      workflow_approvals: %{required: true},
+      workflow_retry: %{max_attempts: 3},
+      workflow_writeback: %{channel: "linear"}
+    )
+
+    issue = %Issue{
+      identifier: "S-2",
+      title: "Render workflow context",
+      description: "Prompt template should see workflow dsl values",
+      state: "Todo",
+      url: "https://example.org/issues/S-2",
+      labels: []
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert prompt == "mode=autonomous gate=validation approval=true retry=3 writeback=linear"
   end
 
   test "prompt builder renders issue datetime fields without crashing" do

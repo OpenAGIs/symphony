@@ -51,20 +51,21 @@ defmodule SymphonyElixir.Orchestrator do
   @impl true
   def init(opts) do
     now_ms = System.monotonic_time(:millisecond)
+    initial_poll_delay_ms = Keyword.get(opts, :initial_poll_delay_ms, 0)
 
     state = %State{
       poll_interval_ms: Config.poll_interval_ms(),
       max_concurrent_agents: Config.max_concurrent_agents(),
       lease_owner: Keyword.get(opts, :lease_owner, default_lease_owner()),
       lease_ttl_ms: Keyword.get(opts, :lease_ttl_ms, default_lease_ttl_ms()),
-      next_poll_due_at_ms: now_ms,
+      next_poll_due_at_ms: now_ms + initial_poll_delay_ms,
       poll_check_in_progress: false,
       codex_totals: @empty_codex_totals,
       codex_rate_limits: nil
     }
 
     run_terminal_workspace_cleanup()
-    :ok = schedule_tick(0)
+    :ok = schedule_tick(initial_poll_delay_ms)
 
     {:ok, state}
   end

@@ -110,6 +110,11 @@ defmodule SymphonyElixir.TestSupport do
           observability_enabled: true,
           observability_refresh_ms: 1_000,
           observability_render_interval_ms: 16,
+          workflow_strategy: nil,
+          workflow_acceptance: nil,
+          workflow_approvals: nil,
+          workflow_retry: nil,
+          workflow_writeback: nil,
           server_port: nil,
           server_host: nil,
           prompt: @workflow_prompt
@@ -146,6 +151,11 @@ defmodule SymphonyElixir.TestSupport do
     observability_enabled = Keyword.get(config, :observability_enabled)
     observability_refresh_ms = Keyword.get(config, :observability_refresh_ms)
     observability_render_interval_ms = Keyword.get(config, :observability_render_interval_ms)
+    workflow_strategy = Keyword.get(config, :workflow_strategy)
+    workflow_acceptance = Keyword.get(config, :workflow_acceptance)
+    workflow_approvals = Keyword.get(config, :workflow_approvals)
+    workflow_retry = Keyword.get(config, :workflow_retry)
+    workflow_writeback = Keyword.get(config, :workflow_writeback)
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
     prompt = Keyword.get(config, :prompt)
@@ -181,6 +191,7 @@ defmodule SymphonyElixir.TestSupport do
         "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
+        workflow_yaml(workflow_strategy, workflow_acceptance, workflow_approvals, workflow_retry, workflow_writeback),
         server_yaml(server_port, server_host),
         "---",
         prompt
@@ -234,6 +245,21 @@ defmodule SymphonyElixir.TestSupport do
       "  refresh_ms: #{yaml_value(refresh_ms)}",
       "  render_interval_ms: #{yaml_value(render_interval_ms)}"
     ]
+    |> Enum.join("\n")
+  end
+
+  defp workflow_yaml(nil, nil, nil, nil, nil), do: nil
+
+  defp workflow_yaml(strategy, acceptance, approvals, retry, writeback) do
+    [
+      "workflow:",
+      strategy && "  strategy: #{yaml_value(strategy)}",
+      acceptance && "  acceptance: #{yaml_value(acceptance)}",
+      approvals && "  approvals: #{yaml_value(approvals)}",
+      retry && "  retry: #{yaml_value(retry)}",
+      writeback && "  writeback: #{yaml_value(writeback)}"
+    ]
+    |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
 

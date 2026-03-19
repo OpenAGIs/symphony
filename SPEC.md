@@ -335,6 +335,9 @@ Note:
   apply dynamically or require restart.
 - Common extension: `server.port` (integer) enables the optional HTTP server described in Section
   13.7.
+- Common extension: `workflow` may carry declarative execution metadata such as strategy,
+  acceptance gates, approval rules, retry policy, and writeback instructions for prompt/rendering
+  consumers.
 
 #### 5.3.1 `tracker` (object)
 

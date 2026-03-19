@@ -44,6 +44,11 @@ defmodule SymphonyElixir.Config do
   @default_observability_refresh_ms 1_000
   @default_observability_render_interval_ms 16
   @default_server_host "127.0.0.1"
+  @default_workflow_strategy %{}
+  @default_workflow_acceptance []
+  @default_workflow_approvals %{}
+  @default_workflow_retry %{}
+  @default_workflow_writeback %{}
   @workflow_options_schema NimbleOptions.new!(
                              tracker: [
                                type: :map,
@@ -155,6 +160,17 @@ defmodule SymphonyElixir.Config do
                                  ]
                                ]
                              ],
+                             workflow: [
+                               type: :map,
+                               default: %{},
+                               keys: [
+                                 strategy: [type: {:map, :any, :any}, default: @default_workflow_strategy],
+                                 acceptance: [type: {:list, {:map, :any, :any}}, default: @default_workflow_acceptance],
+                                 approvals: [type: {:map, :any, :any}, default: @default_workflow_approvals],
+                                 retry: [type: {:map, :any, :any}, default: @default_workflow_retry],
+                                 writeback: [type: {:map, :any, :any}, default: @default_workflow_writeback]
+                               ]
+                             ],
                              server: [
                                type: :map,
                                default: %{},
@@ -166,6 +182,8 @@ defmodule SymphonyElixir.Config do
                            )
 
   @type workflow_payload :: Workflow.loaded_workflow()
+  @type workflow_dsl_section :: map()
+  @type workflow_acceptance_clause :: map()
   @type tracker_kind :: String.t() | nil
   @type codex_runtime_settings :: %{
           approval_policy: String.t() | map(),
@@ -370,6 +388,31 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec workflow_strategy() :: workflow_dsl_section()
+  def workflow_strategy do
+    get_in(validated_workflow_options(), [:workflow, :strategy])
+  end
+
+  @spec workflow_acceptance() :: [workflow_acceptance_clause()]
+  def workflow_acceptance do
+    get_in(validated_workflow_options(), [:workflow, :acceptance])
+  end
+
+  @spec workflow_approvals() :: workflow_dsl_section()
+  def workflow_approvals do
+    get_in(validated_workflow_options(), [:workflow, :approvals])
+  end
+
+  @spec workflow_retry() :: workflow_dsl_section()
+  def workflow_retry do
+    get_in(validated_workflow_options(), [:workflow, :retry])
+  end
+
+  @spec workflow_writeback() :: workflow_dsl_section()
+  def workflow_writeback do
+    get_in(validated_workflow_options(), [:workflow, :writeback])
+  end
+
   @spec observability_enabled?() :: boolean()
   def observability_enabled? do
     get_in(validated_workflow_options(), [:observability, :dashboard_enabled])
@@ -512,6 +555,7 @@ defmodule SymphonyElixir.Config do
       codex: extract_codex_options(section_map(config, "codex")),
       hooks: extract_hooks_options(section_map(config, "hooks")),
       observability: extract_observability_options(section_map(config, "observability")),
+      workflow: extract_workflow_dsl_options(section_map(config, "workflow")),
       server: extract_server_options(section_map(config, "server"))
     }
   end
@@ -580,6 +624,15 @@ defmodule SymphonyElixir.Config do
     |> put_if_present(:dashboard_enabled, boolean_value(Map.get(section, "dashboard_enabled")))
     |> put_if_present(:refresh_ms, integer_value(Map.get(section, "refresh_ms")))
     |> put_if_present(:render_interval_ms, integer_value(Map.get(section, "render_interval_ms")))
+  end
+
+  defp extract_workflow_dsl_options(section) do
+    %{}
+    |> put_if_present(:strategy, map_value(Map.get(section, "strategy")))
+    |> put_if_present(:acceptance, list_of_maps_value(Map.get(section, "acceptance")))
+    |> put_if_present(:approvals, map_value(Map.get(section, "approvals")))
+    |> put_if_present(:retry, map_value(Map.get(section, "retry")))
+    |> put_if_present(:writeback, map_value(Map.get(section, "writeback")))
   end
 
   defp extract_server_options(section) do
@@ -713,6 +766,21 @@ defmodule SymphonyElixir.Config do
   end
 
   defp boolean_value(_value), do: :omit
+
+  defp map_value(value) when is_map(value), do: normalize_keys(value)
+  defp map_value(_value), do: :omit
+
+  defp list_of_maps_value(values) when is_list(values) do
+    values
+    |> Enum.filter(&is_map/1)
+    |> Enum.map(&normalize_keys/1)
+    |> case do
+      [] -> :omit
+      normalized_values -> normalized_values
+    end
+  end
+
+  defp list_of_maps_value(_value), do: :omit
 
   defp state_limits_value(value) when is_map(value) do
     value

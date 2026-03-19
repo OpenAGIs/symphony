@@ -121,11 +121,21 @@ agent:
   max_turns: 20
 codex:
   command: codex app-server
+workflow:
+  strategy:
+    mode: autonomous
+  acceptance:
+    - id: validation
+      required: true
+  retry:
+    max_attempts: 3
 ---
 
 You are working on a {{ tracker.display_name }} issue {{ issue.identifier }}.
 
 Title: {{ issue.title }} Body: {{ issue.description }}
+
+Workflow mode: {{ workflow.strategy.mode }}
 ```
 
 Local-only example:
@@ -173,6 +183,10 @@ Notes:
 - Built-in tracker runtime support is currently provided for `linear`, `local`, and `memory`;
   `jira` and `github` resolve cleanly at the workflow/task-entry layer and can be bound to runtime
   adapters through `:tracker_adapter_modules`.
+- `workflow` is an optional front-matter extension for declarative execution policy. The current
+  implementation preserves and exposes `workflow.strategy`, `workflow.acceptance`,
+  `workflow.approvals`, `workflow.retry`, and `workflow.writeback` as typed config and template
+  data under `workflow.*`.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
 - Hook commands receive `SYMPHONY_WORKSPACE`, `SYMPHONY_ISSUE_ID`, `SYMPHONY_ISSUE_IDENTIFIER`,
