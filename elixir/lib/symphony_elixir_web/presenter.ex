@@ -18,8 +18,7 @@ defmodule SymphonyElixirWeb.Presenter do
           generated_at: generated_at,
           counts: %{
             running: running_count,
-            retrying: length(snapshot.retrying),
-            dead_lettered: length(Map.get(snapshot, :dead_letters, []))
+            retrying: length(snapshot.retrying)
           },
           capacity: %{
             running: running_count,
@@ -28,22 +27,29 @@ defmodule SymphonyElixirWeb.Presenter do
           },
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
-          dead_letters: Enum.map(Map.get(snapshot, :dead_letters, []), &dead_letter_entry_payload/1),
           codex_totals: snapshot.codex_totals,
           rate_limits: snapshot.rate_limits,
           polling: polling_payload(snapshot)
         }
 
       :timeout ->
-        %{generated_at: generated_at, error: %{code: "snapshot_timeout", message: "Snapshot timed out"}}
+        %{
+          generated_at: generated_at,
+          error: %{code: "snapshot_timeout", message: "Snapshot timed out"}
+        }
 
       :unavailable ->
-        %{generated_at: generated_at, error: %{code: "snapshot_unavailable", message: "Snapshot unavailable"}}
+        %{
+          generated_at: generated_at,
+          error: %{code: "snapshot_unavailable", message: "Snapshot unavailable"}
+        }
     end
   end
 
-  @spec issue_payload(String.t(), GenServer.name(), timeout()) :: {:ok, map()} | {:error, :issue_not_found}
-  def issue_payload(issue_identifier, orchestrator, snapshot_timeout_ms) when is_binary(issue_identifier) do
+  @spec issue_payload(String.t(), GenServer.name(), timeout()) ::
+          {:ok, map()} | {:error, :issue_not_found}
+  def issue_payload(issue_identifier, orchestrator, snapshot_timeout_ms)
+      when is_binary(issue_identifier) do
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
         running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
@@ -137,16 +143,6 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
-  defp dead_letter_entry_payload(entry) do
-    %{
-      issue_id: entry.issue_id,
-      issue_identifier: entry.identifier,
-      attempt: entry.attempt,
-      failed_at: entry.failed_at,
-      error: entry.error
-    }
-  end
-
   defp running_issue_payload(running) do
     %{
       session_id: running.session_id,
@@ -219,65 +215,9 @@ defmodule SymphonyElixirWeb.Presenter do
       branch_name: issue.branch_name,
       url: issue.url,
       blocked_by: issue.blocked_by || [],
-      attachments: attachments_payload(issue),
       assigned_to_worker: Map.get(issue, :assigned_to_worker, true),
       created_at: iso8601(issue.created_at),
-      updated_at: iso8601(issue.updated_at),
-      claimed_by: issue.claimed_by,
-      claimed_at: iso8601(issue.claimed_at),
-      lease_expires_at: iso8601(issue.lease_expires_at),
-      lease_status: issue |> Local.lease_status() |> Atom.to_string(),
-      comments: comments_payload(Map.get(issue, :comments, []))
-    }
-  end
-
-  defp attachments_payload(issue) do
-    issue
-    |> Map.get(:attachments, [])
-    |> Enum.map(fn attachment ->
-      preview_kind = Local.attachment_preview_kind(attachment)
-
-      %{
-        id: attachment["id"],
-        filename: attachment["filename"],
-        content_type: attachment["content_type"],
-        byte_size: attachment["byte_size"],
-        uploaded_at: attachment["uploaded_at"],
-        preview_kind: Atom.to_string(preview_kind),
-        preview_url: attachment_preview_url(issue, attachment),
-        download_url: attachment_download_url(issue, attachment)
-      }
-    end)
-  end
-
-  defp attachment_download_url(issue, attachment) do
-    issue_ref = issue.id || issue.identifier
-    attachment_id = attachment["id"]
-
-    if is_binary(issue_ref) and is_binary(attachment_id) do
-      "/api/v1/local-issues/#{URI.encode(issue_ref)}/attachments/#{URI.encode(attachment_id)}"
-    end
-  end
-
-  defp attachment_preview_url(issue, attachment) do
-    issue_ref = issue.id || issue.identifier
-    attachment_id = attachment["id"]
-
-    if is_binary(issue_ref) and is_binary(attachment_id) do
-      "/api/v1/local-issues/#{URI.encode(issue_ref)}/attachments/#{URI.encode(attachment_id)}/preview"
-    end
-  end
-
-  defp comments_payload(comments) when is_list(comments) do
-    Enum.map(comments, &comment_payload/1)
-  end
-
-  defp comments_payload(_comments), do: []
-
-  defp comment_payload(comment) when is_map(comment) do
-    %{
-      body: Map.get(comment, :body),
-      created_at: iso8601(Map.get(comment, :created_at))
+      updated_at: iso8601(issue.updated_at)
     }
   end
 

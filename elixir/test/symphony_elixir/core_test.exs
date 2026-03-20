@@ -1,8 +1,6 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Tracker.Local
-
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -91,30 +89,10 @@ defmodule SymphonyElixir.CoreTest do
       tracker_path: "./issues.json"
     )
 
-    assert Config.local_tracker_path() == Path.expand("./issues.json")
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "jira")
+    assert Config.local_tracker_path() ==
+             Path.expand("./issues.json", Path.dirname(Workflow.workflow_file_path()))
+
     assert :ok = Config.validate!()
-
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "github")
-    assert :ok = Config.validate!()
-
-    write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_kind: "bigclaw",
-      tracker_adapter_module: "SymphonyElixir.Tracker.Memory"
-    )
-
-    assert Config.tracker_adapter_module() == SymphonyElixir.Tracker.Memory
-    assert :ok = Config.validate!()
-
-    write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_kind: "bigclaw",
-      tracker_adapter_module: "SymphonyElixir.DoesNotExist"
-    )
-
-    assert Config.tracker_adapter_module() == nil
-
-    assert {:error, {:invalid_tracker_adapter_module, {:module_not_found, "SymphonyElixir.DoesNotExist"}}} =
-             Config.validate!()
   end
 
   test "current WORKFLOW.md file is valid and complete" do
@@ -387,90 +365,6 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "terminal reconcile releases persisted local tracker claims" do
-    tracker_root =
-      Path.join(
-        System.tmp_dir!(),
-        "symphony-elixir-terminal-lease-release-#{System.unique_integer([:positive])}"
-      )
-
-    tracker_path = Path.join(tracker_root, "issues.json")
-    issue_id = "issue-lease-release"
-    issue_identifier = "MT-LEASE-1"
-
-    try do
-      File.mkdir_p!(tracker_root)
-
-      write_workflow_file!(Workflow.workflow_file_path(),
-        tracker_kind: "local",
-        tracker_path: tracker_path,
-        tracker_api_token: nil,
-        tracker_project_slug: nil
-      )
-
-      File.write!(
-        tracker_path,
-        Jason.encode!(
-          %{
-            "issues" => [
-              %{
-                "id" => issue_id,
-                "identifier" => issue_identifier,
-                "title" => "Claimed issue",
-                "state" => "In Progress"
-              }
-            ]
-          },
-          pretty: true
-        )
-      )
-
-      assert :ok = Local.claim_issue(issue_id, "runtime-a", ttl_ms: 60_000)
-
-      agent_pid =
-        spawn(fn ->
-          receive do
-            :stop -> :ok
-          end
-        end)
-
-      state = %Orchestrator.State{
-        lease_owner: "runtime-a",
-        running: %{
-          issue_id => %{
-            pid: agent_pid,
-            ref: nil,
-            identifier: issue_identifier,
-            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
-            started_at: DateTime.utc_now()
-          }
-        },
-        claimed: MapSet.new([issue_id]),
-        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
-        retry_attempts: %{}
-      }
-
-      issue = %Issue{
-        id: issue_id,
-        identifier: issue_identifier,
-        state: "Done",
-        title: "Released claim",
-        description: "Terminal state should clear claim",
-        labels: []
-      }
-
-      updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
-
-      refute Map.has_key?(updated_state.running, issue_id)
-      refute MapSet.member?(updated_state.claimed, issue_id)
-
-      assert {:ok, [%Issue{id: ^issue_id, claimed_by: nil, lease_expires_at: nil}]} =
-               Local.fetch_issue_states_by_ids([issue_id])
-    after
-      File.rm_rf(tracker_root)
-    end
-  end
-
   test "reconcile updates running issue state for active issues" do
     issue_id = "issue-3"
 
@@ -561,13 +455,7 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-resume"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :ContinuationOrchestrator)
-
-    {:ok, pid} =
-      Orchestrator.start_link(
-        name: orchestrator_name,
-        initial_poll_delay_ms: 60_000,
-        startup_cleanup?: false
-      )
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
     on_exit(fn ->
       if Process.alive?(pid) do
@@ -607,13 +495,7 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-crash"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :CrashRetryOrchestrator)
-
-    {:ok, pid} =
-      Orchestrator.start_link(
-        name: orchestrator_name,
-        initial_poll_delay_ms: 60_000,
-        startup_cleanup?: false
-      )
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
     on_exit(fn ->
       if Process.alive?(pid) do
@@ -653,13 +535,7 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-crash-initial"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :InitialCrashRetryOrchestrator)
-
-    {:ok, pid} =
-      Orchestrator.start_link(
-        name: orchestrator_name,
-        initial_poll_delay_ms: 60_000,
-        startup_cleanup?: false
-      )
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
     on_exit(fn ->
       if Process.alive?(pid) do
@@ -696,11 +572,9 @@ defmodule SymphonyElixir.CoreTest do
 
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
-    lower_bound = min_remaining_ms - 1_000
-    upper_bound = max_remaining_ms + 250
 
-    assert remaining_ms >= lower_bound
-    assert remaining_ms <= upper_bound
+    assert remaining_ms >= min_remaining_ms
+    assert remaining_ms <= max_remaining_ms
   end
 
   test "fetch issues by states with empty state set is a no-op" do
@@ -727,35 +601,6 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Ticket S-1 Refactor backend request path"
     assert prompt =~ "labels=backend"
     assert prompt =~ "attempt=3"
-  end
-
-  test "prompt builder exposes workflow dsl context to templates" do
-    workflow_prompt =
-      "mode={{ workflow.strategy.mode }} gate={{ workflow.acceptance[0].id }} " <>
-        "approval={{ workflow.approvals.required }} retry={{ workflow.retry.max_attempts }} " <>
-        "writeback={{ workflow.writeback.channel }}"
-
-    write_workflow_file!(Workflow.workflow_file_path(),
-      prompt: workflow_prompt,
-      workflow_strategy: %{mode: "autonomous"},
-      workflow_acceptance: [%{id: "validation", required: true}],
-      workflow_approvals: %{required: true},
-      workflow_retry: %{max_attempts: 3},
-      workflow_writeback: %{channel: "linear"}
-    )
-
-    issue = %Issue{
-      identifier: "S-2",
-      title: "Render workflow context",
-      description: "Prompt template should see workflow dsl values",
-      state: "Todo",
-      url: "https://example.org/issues/S-2",
-      labels: []
-    }
-
-    prompt = PromptBuilder.build_prompt(issue)
-
-    assert prompt == "mode=autonomous gate=validation approval=true retry=3 writeback=linear"
   end
 
   test "prompt builder renders issue datetime fields without crashing" do
@@ -856,7 +701,7 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt = PromptBuilder.build_prompt(issue)
 
-    assert prompt =~ "You are working on a Linear issue."
+    assert prompt =~ "You are working on a tracked issue."
     assert prompt =~ "Identifier: MT-777"
     assert prompt =~ "Title: Make fallback prompt useful"
     assert prompt =~ "Body:"
@@ -883,23 +728,6 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Identifier: MT-778"
     assert prompt =~ "Title: Handle empty body"
     assert prompt =~ "No description provided."
-  end
-
-  test "prompt builder default template uses tracker display names" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "jira", prompt: "")
-
-    issue = %Issue{
-      identifier: "MT-779",
-      title: "Handle non-linear tracker prompts",
-      description: "Use tracker context in default prompts.",
-      state: "Todo",
-      url: "https://example.org/issues/MT-779",
-      labels: []
-    }
-
-    prompt = PromptBuilder.build_prompt(issue)
-
-    assert prompt =~ "You are working on a Jira issue."
   end
 
   test "prompt builder reports workflow load failures separately from template parse errors" do
@@ -1048,14 +876,7 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       before = MapSet.new(File.ls!(workspace_root))
-
-      assert :ok =
-               AgentRunner.run(
-                 issue,
-                 nil,
-                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
-               )
-
+      assert :ok = AgentRunner.run(issue)
       entries_after = MapSet.new(File.ls!(workspace_root))
 
       created =
@@ -1743,242 +1564,6 @@ defmodule SymphonyElixir.CoreTest do
                  false
                end
              end)
-    after
-      File.rm_rf(test_root)
-    end
-  end
-
-  test "app server applies execution environment sandbox presets" do
-    test_root =
-      Path.join(
-        System.tmp_dir!(),
-        "symphony-elixir-app-server-execution-environment-#{System.unique_integer([:positive])}"
-      )
-
-    try do
-      workspace_root = Path.join(test_root, "workspaces")
-      workspace = Path.join(workspace_root, "MT-101")
-      codex_binary = Path.join(test_root, "fake-codex")
-      trace_file = Path.join(test_root, "codex-execution-environment.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
-      File.mkdir_p!(workspace)
-
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-execution-environment.trace}"
-      count=0
-
-      while IFS= read -r line; do
-        count=$((count + 1))
-        printf 'JSON:%s\\n' "$line" >> "$trace_file"
-        case "$count" in
-          1)
-            printf '%s\\n' '{"id":1,"result":{}}'
-            ;;
-          2)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-101"}}}'
-            ;;
-          3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-101"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{"method":"turn/completed"}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
-
-      write_workflow_file!(Workflow.workflow_file_path(),
-        workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server",
-        codex_execution_environment: "vm"
-      )
-
-      issue = %Issue{
-        id: "issue-execution-environment",
-        identifier: "MT-101",
-        title: "Execution environment preset",
-        description: "Check startup payload preset wiring",
-        state: "In Progress",
-        url: "https://example.org/issues/MT-101",
-        labels: ["backend"]
-      }
-
-      assert {:ok, _result} = AppServer.run(workspace, "Use VM preset", issue)
-
-      lines = File.read!(trace_file) |> String.split("\n", trim: true)
-
-      assert Enum.any?(lines, fn line ->
-               if String.starts_with?(line, "JSON:") do
-                 line
-                 |> String.trim_leading("JSON:")
-                 |> Jason.decode!()
-                 |> then(fn payload ->
-                   payload["method"] == "thread/start" &&
-                     get_in(payload, ["params", "sandbox"]) == "workspace-write"
-                 end)
-               else
-                 false
-               end
-             end)
-
-      assert Enum.any?(lines, fn line ->
-               if String.starts_with?(line, "JSON:") do
-                 line
-                 |> String.trim_leading("JSON:")
-                 |> Jason.decode!()
-                 |> then(fn payload ->
-                   payload["method"] == "turn/start" &&
-                     get_in(payload, ["params", "sandboxPolicy"]) == %{
-                       "type" => "externalSandbox",
-                       "networkAccess" => "restricted"
-                     }
-                 end)
-               else
-                 false
-               end
-             end)
-    after
-      File.rm_rf(test_root)
-    end
-  end
-
-  test "agent runner persists worker runtime outputs for upload" do
-    test_root =
-      Path.join(
-        System.tmp_dir!(),
-        "symphony-elixir-agent-runner-runtime-output-#{System.unique_integer([:positive])}"
-      )
-
-    try do
-      template_repo = Path.join(test_root, "source")
-      workspace_root = Path.join(test_root, "workspaces")
-      logs_root = Path.join(test_root, "logs-root")
-      codex_binary = Path.join(test_root, "fake-codex")
-
-      File.mkdir_p!(template_repo)
-      File.mkdir_p!(workspace_root)
-      File.write!(Path.join(template_repo, "README.md"), "# runtime output\n")
-      File.write!(Path.join(template_repo, "artifact.txt"), "upload me\n")
-      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
-      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
-      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
-      System.cmd("git", ["-C", template_repo, "add", "README.md", "artifact.txt"])
-      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
-
-      Application.put_env(
-        :symphony_elixir,
-        :log_file,
-        SymphonyElixir.LogFile.default_log_file(logs_root)
-      )
-
-      on_exit(fn ->
-        Application.delete_env(:symphony_elixir, :log_file)
-      end)
-
-      File.write!(codex_binary, """
-      #!/bin/sh
-      count=0
-      while IFS= read -r line; do
-        count=$((count + 1))
-        case "$count" in
-          1)
-            printf '%s\\n' '{"id":1,"result":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-output"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-output"}}}'
-            printf '%s\\n' '{"method":"codex/event/task_started","params":{"task_id":"task-1"}}'
-            printf '%s\\n' '{"method":"turn/completed","params":{"result":"done"}}'
-            exit 0
-            ;;
-          *)
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
-
-      write_workflow_file!(Workflow.workflow_file_path(),
-        workspace_root: workspace_root,
-        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md && cp #{Path.join(template_repo, "artifact.txt")} artifact.txt",
-        codex_command: "#{codex_binary} app-server"
-      )
-
-      issue = %Issue{
-        id: "issue-runtime-output",
-        identifier: "MT-OUTPUT",
-        title: "Persist outputs",
-        description: "Runtime outputs should be upload ready",
-        state: "In Progress",
-        url: "https://example.org/issues/MT-OUTPUT",
-        labels: ["backend"]
-      }
-
-      assert :ok =
-               AgentRunner.run(
-                 issue,
-                 nil,
-                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
-               )
-
-      runs_root = Path.join([logs_root, "log", "worker-runs"])
-      [run_dir_name] = File.ls!(runs_root)
-      run_dir = Path.join(runs_root, run_dir_name)
-
-      metadata = run_dir |> Path.join("metadata.json") |> File.read!() |> Jason.decode!()
-      artifacts = run_dir |> Path.join("workspace-artifacts.json") |> File.read!() |> Jason.decode!()
-
-      events =
-        run_dir
-        |> Path.join("codex-events.jsonl")
-        |> File.read!()
-        |> String.split("\n", trim: true)
-        |> Enum.map(&Jason.decode!/1)
-
-      assert metadata["issue"] == %{"id" => "issue-runtime-output", "identifier" => "MT-OUTPUT"}
-      assert metadata["outcome"] == %{"status" => "ok"}
-
-      assert metadata["log_file"] ==
-               Path.join([logs_root, "log", "symphony.log"]) |> Path.expand()
-
-      assert Enum.any?(artifacts, &(&1["path"] == "README.md"))
-      assert Enum.any?(artifacts, &(&1["path"] == "artifact.txt"))
-
-      assert Enum.any?(
-               events,
-               &(&1["event"] == "session_started" &&
-                   &1["session_id"] == "thread-output-turn-output")
-             )
-
-      assert Enum.any?(
-               events,
-               &(&1["event"] == "notification" &&
-                   get_in(&1, ["payload", "method"]) == "codex/event/task_started")
-             )
-
-      assert Enum.any?(events, &(&1["event"] == "turn_completed"))
     after
       File.rm_rf(test_root)
     end
