@@ -178,6 +178,8 @@ Notes:
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
 - For path values, `~` is expanded to the home directory.
+- Relative path values such as `./local-issues.json` resolve against the directory that contains the
+  active workflow file.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
   while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
   launched shell.

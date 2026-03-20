@@ -1016,6 +1016,29 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert rendered =~ "http://127.0.0.1:4000/"
   end
 
+  test "status dashboard renders local tracker path in header" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: "./issues.json",
+      tracker_project_slug: nil
+    )
+
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
+
+    assert rendered =~ "│ Tracker:"
+    assert rendered =~ Path.expand("./issues.json", Path.dirname(Workflow.workflow_file_path()))
+    assert rendered =~ "(local)"
+  end
+
   test "status dashboard prefers the bound server port and normalizes wildcard hosts" do
     assert StatusDashboard.dashboard_url_for_test("0.0.0.0", 0, 43_123) ==
              "http://127.0.0.1:43123/"
@@ -1138,7 +1161,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     if is_pid(orchestrator_pid) do
-      assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator)
+      assert :ok =
+               Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator)
     end
 
     {:ok, pid} =

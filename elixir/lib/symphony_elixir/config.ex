@@ -893,7 +893,7 @@ defmodule SymphonyElixir.Config do
       path ->
         path
         |> String.trim()
-        |> preserve_command_name()
+        |> preserve_command_name(workflow_file_dir())
         |> then(fn
           "" -> default
           resolved -> resolved
@@ -903,17 +903,24 @@ defmodule SymphonyElixir.Config do
 
   defp resolve_path_value(_value, default), do: default
 
-  defp preserve_command_name(path) do
+  defp preserve_command_name(path, workflow_dir) do
     cond do
       uri_path?(path) ->
         path
 
-      String.contains?(path, "/") or String.contains?(path, "\\") ->
-        Path.expand(path)
+      path in [".", ".."] or String.starts_with?(path, "~") or String.contains?(path, "/") or
+          String.contains?(path, "\\") ->
+        Path.expand(path, workflow_dir)
 
       true ->
         path
     end
+  end
+
+  defp workflow_file_dir do
+    Workflow.workflow_file_path()
+    |> Path.expand()
+    |> Path.dirname()
   end
 
   defp uri_path?(path) do

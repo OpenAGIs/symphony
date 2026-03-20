@@ -201,7 +201,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert :ok = Memory.create_comment("issue-1", "quiet")
     assert :ok = Memory.update_issue_state("issue-1", "Quiet")
 
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "local", tracker_path: "./issues.json")
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: "./issues.json"
+    )
+
     assert SymphonyElixir.Tracker.adapter() == SymphonyElixir.Tracker.Local
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
@@ -363,6 +367,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
              "counts" => %{"running" => 1, "retrying" => 1},
+             "capacity" => %{"running" => 1, "limit" => 10, "available" => 9},
              "running" => [
                %{
                  "issue_id" => "issue-http",
@@ -392,7 +397,12 @@ defmodule SymphonyElixir.ExtensionsTest do
                "total_tokens" => 12,
                "seconds_running" => 42.5
              },
-             "rate_limits" => %{"primary" => %{"remaining" => 11}}
+             "rate_limits" => %{"primary" => %{"remaining" => 11}},
+             "polling" => %{
+               "checking?" => false,
+               "next_poll_in_ms" => 2_000,
+               "poll_interval_ms" => 15_000
+             }
            }
 
     conn = get(build_conn(), "/api/v1/MT-HTTP")
@@ -551,6 +561,8 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Operations Dashboard"
+    assert html =~ "Phoenix LiveView"
+    assert html =~ "dashboard release1.0"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "rendered"
@@ -655,9 +667,20 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Local issues"
+    assert html =~ "Agent Capacity"
     assert html =~ "LOCAL-1"
     assert html =~ "Move the workflow UI local"
     assert html =~ tracker_path
+    assert html =~ Path.join(Config.workspace_root(), "LOCAL-1")
+
+    local_issue_payload = json_response(get(build_conn(), "/api/v1/LOCAL-1"), 200)
+
+    assert local_issue_payload["status"] == "Todo"
+    assert local_issue_payload["tracked"]["identifier"] == "LOCAL-1"
+    assert local_issue_payload["tracked"]["title"] == "Move the workflow UI local"
+
+    assert local_issue_payload["workspace"]["path"] ==
+             Path.join(Config.workspace_root(), "LOCAL-1")
 
     created_html =
       view
@@ -812,7 +835,8 @@ defmodule SymphonyElixir.ExtensionsTest do
         }
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
-      rate_limits: %{"primary" => %{"remaining" => 11}}
+      rate_limits: %{"primary" => %{"remaining" => 11}},
+      polling: %{checking?: false, next_poll_in_ms: 2_000, poll_interval_ms: 15_000}
     }
   end
 

@@ -7,6 +7,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   alias SymphonyElixir.{Config, Tracker.Local}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
+  @dashboard_frontend "Phoenix LiveView"
+  @dashboard_release "dashboard release1.0"
   @runtime_tick_ms 1_000
 
   @impl true
@@ -14,10 +16,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
     socket =
       socket
       |> assign(:payload, load_payload())
-      |> assign(:local_tracker, load_local_tracker())
+      |> assign(:dashboard_frontend, @dashboard_frontend)
+      |> assign(:dashboard_release, @dashboard_release)
       |> assign(:local_issue_states, local_issue_states())
       |> assign(:local_tracker_feedback, nil)
+      |> assign(:selected_local_issue_ref, nil)
       |> assign(:now, DateTime.utc_now())
+      |> refresh_local_tracker()
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -38,8 +43,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
     {:noreply,
      socket
      |> assign(:payload, load_payload())
-     |> assign(:local_tracker, load_local_tracker())
-     |> assign(:now, DateTime.utc_now())}
+     |> assign(:now, DateTime.utc_now())
+     |> refresh_local_tracker()}
   end
 
   @impl true
@@ -50,20 +55,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
         {:noreply,
          socket
-         |> assign(:local_tracker, load_local_tracker())
          |> assign(:local_tracker_feedback, %{
            kind: :info,
            message: "Created #{issue.identifier}"
-         })}
+         })
+         |> refresh_local_tracker(issue.id || issue.identifier)}
 
       {:error, reason} ->
         {:noreply,
          socket
-         |> assign(:local_tracker, load_local_tracker())
          |> assign(:local_tracker_feedback, %{
            kind: :error,
            message: local_tracker_error_message("Failed to create local issue", reason)
-         })}
+         })
+         |> refresh_local_tracker()}
     end
   end
 
@@ -78,21 +83,25 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
         {:noreply,
          socket
-         |> assign(:local_tracker, load_local_tracker())
          |> assign(:local_tracker_feedback, %{
            kind: :info,
            message: "Updated #{issue_ref} to #{state}"
-         })}
+         })
+         |> refresh_local_tracker(issue_ref)}
 
       {:error, reason} ->
         {:noreply,
          socket
-         |> assign(:local_tracker, load_local_tracker())
          |> assign(:local_tracker_feedback, %{
            kind: :error,
            message: local_tracker_error_message("Failed to update local issue state", reason)
-         })}
+         })
+         |> refresh_local_tracker(issue_ref)}
     end
+  end
+
+  def handle_event("select_local_issue", %{"issue_ref" => issue_ref}, socket) do
+    {:noreply, refresh_local_tracker(socket, issue_ref)}
   end
 
   @impl true
@@ -102,9 +111,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
       <header class="hero-card">
         <div class="hero-grid">
           <div>
-            <p class="eyebrow">
-              Symphony Observability
-            </p>
+            <div class="hero-meta-row">
+              <p class="eyebrow">
+                Symphony Observability
+              </p>
+              <span class="hero-chip hero-chip-neutral"><%= @dashboard_frontend %></span>
+              <span class="hero-chip hero-chip-accent"><%= @dashboard_release %></span>
+            </div>
             <h1 class="hero-title">
               Operations Dashboard
             </h1>
@@ -332,29 +345,68 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
           <div class="tracker-grid">
             <div>
+              <div class="tracker-summary-grid">
+                <article class="tracker-summary-card">
+                  <p class="metric-label">Agent Capacity</p>
+                  <p class="metric-value"><%= local_tracker_capacity_value(@payload) %></p>
+                  <p class="metric-detail"><%= local_tracker_capacity_detail(@payload) %></p>
+                </article>
+
+                <article class="tracker-summary-card">
+                  <p class="metric-label">In Progress</p>
+                  <p class="metric-value"><%= local_issue_count(@local_tracker, ["In Progress"]) %></p>
+                  <p class="metric-detail">Current parallel work owned by the local tracker.</p>
+                </article>
+
+                <article class="tracker-summary-card">
+                  <p class="metric-label">Runnable</p>
+                  <p class="metric-value"><%= local_issue_count(@local_tracker, ["Todo", "Rework"]) %></p>
+                  <p class="metric-detail">Queued slices that can be picked up next.</p>
+                </article>
+
+                <article class="tracker-summary-card">
+                  <p class="metric-label">Running Sessions</p>
+                  <p class="metric-value"><%= local_tracker_runtime_count(@local_tracker, @payload, :running) %></p>
+                  <p class="metric-detail">Issue runs currently attached to live agents.</p>
+                </article>
+
+                <article class="tracker-summary-card">
+                  <p class="metric-label">Retrying</p>
+                  <p class="metric-value"><%= local_tracker_runtime_count(@local_tracker, @payload, :retrying) %></p>
+                  <p class="metric-detail">Issues waiting out a retry backoff after a failed attempt.</p>
+                </article>
+              </div>
+
               <%= if @local_tracker.issues == [] do %>
                 <p class="empty-state">No local issues yet. Create one to start a new run.</p>
               <% else %>
                 <div class="table-wrap">
-                  <table class="data-table" style="min-width: 760px;">
+                  <table class="data-table" style="min-width: 920px;">
                     <thead>
                       <tr>
                         <th>Issue</th>
+                        <th>Runtime</th>
                         <th>State</th>
                         <th>Priority</th>
                         <th>Labels</th>
                         <th>Updated</th>
+                        <th>Focus</th>
                         <th>Move</th>
                       </tr>
                     </thead>
                     <tbody>
-                      <tr :for={issue <- @local_tracker.issues}>
+                      <tr :for={issue <- @local_tracker.issues} class={local_issue_row_class(issue, @selected_local_issue_ref)}>
                         <td>
                           <div class="issue-stack">
                             <span class="issue-id"><%= issue.identifier %></span>
                             <span><%= issue.title %></span>
                             <span :if={issue.description} class="muted"><%= issue.description %></span>
                           </div>
+                        </td>
+                        <td>
+                          <span class={local_issue_runtime_badge_class(issue, @payload)}>
+                            <%= local_issue_runtime_badge(issue, @payload) %>
+                          </span>
                         </td>
                         <td>
                           <span class={state_badge_class(issue.state)}>
@@ -364,6 +416,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <td class="numeric"><%= local_issue_priority(issue.priority) %></td>
                         <td><%= local_issue_labels(issue.labels) %></td>
                         <td class="mono"><%= issue.updated_at || "n/a" %></td>
+                        <td>
+                          <button
+                            type="button"
+                            class="secondary tracker-focus-button"
+                            phx-click="select_local_issue"
+                            phx-value-issue_ref={issue.id}
+                          >
+                            Focus
+                          </button>
+                        </td>
                         <td>
                           <form
                             id={"local-issue-state-#{issue.id}"}
@@ -390,57 +452,171 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <% end %>
             </div>
 
-            <form id="local-issue-create-form" class="tracker-create-form" phx-submit="create_local_issue">
-              <div class="field-stack">
-                <label for="local-issue-title">Title</label>
-                <input id="local-issue-title" type="text" name="issue[title]" required />
-              </div>
+            <div class="tracker-sidebar">
+              <article class="tracker-detail-card">
+                <%= if issue = selected_local_issue(@local_tracker, @selected_local_issue_ref) do %>
+                  <% runtime = local_issue_runtime_details(issue, @payload) %>
+                  <div class="tracker-detail-header">
+                    <div class="issue-stack">
+                      <span class="issue-id"><%= issue.identifier %></span>
+                      <strong><%= issue.title %></strong>
+                    </div>
 
-              <div class="field-row">
+                    <a class="issue-link" href={local_issue_detail_href(issue)}>
+                      JSON details
+                    </a>
+                  </div>
+
+                  <div class="tracker-pill-row">
+                    <span class={state_badge_class(issue.state)}><%= issue.state %></span>
+                    <span class={local_issue_runtime_badge_class(issue, @payload)}>
+                      <%= local_issue_runtime_badge(issue, @payload) %>
+                    </span>
+                  </div>
+
+                  <dl class="tracker-detail-list">
+                    <div>
+                      <dt>Priority</dt>
+                      <dd><%= local_issue_priority(issue.priority) %></dd>
+                    </div>
+                    <div>
+                      <dt>Labels</dt>
+                      <dd><%= local_issue_labels(issue.labels) %></dd>
+                    </div>
+                    <div>
+                      <dt>Updated</dt>
+                      <dd class="mono"><%= issue.updated_at || "n/a" %></dd>
+                    </div>
+                    <div>
+                      <dt>Created</dt>
+                      <dd class="mono"><%= issue.created_at || "n/a" %></dd>
+                    </div>
+                    <div>
+                      <dt>Branch</dt>
+                      <dd class="mono"><%= issue.branch_name || "n/a" %></dd>
+                    </div>
+                    <div>
+                      <dt>Worker Eligible</dt>
+                      <dd><%= local_issue_worker_label(issue.assigned_to_worker) %></dd>
+                    </div>
+                    <div>
+                      <dt>Source</dt>
+                      <dd>
+                        <%= if issue.url do %>
+                          <a class="issue-link" href={issue.url} target="_blank" rel="noreferrer">
+                            Open linked item
+                          </a>
+                        <% else %>
+                          n/a
+                        <% end %>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Blocked By</dt>
+                      <dd><%= local_issue_blocked_by(issue.blocked_by) %></dd>
+                    </div>
+                  </dl>
+
+                  <div class="tracker-runtime-card">
+                    <p class="metric-label">Runtime Details</p>
+                    <dl class="tracker-detail-list tracker-runtime-list">
+                      <div>
+                        <dt>Workspace</dt>
+                        <dd class="mono"><%= runtime.workspace_path %></dd>
+                      </div>
+                      <div>
+                        <dt>Session</dt>
+                        <dd class="mono"><%= runtime.session_id || "n/a" %></dd>
+                      </div>
+                      <div>
+                        <dt>Turns</dt>
+                        <dd><%= runtime.turn_count || 0 %></dd>
+                      </div>
+                      <div>
+                        <dt>Last Event</dt>
+                        <dd><%= runtime.last_event || "n/a" %></dd>
+                      </div>
+                      <div>
+                        <dt>Last Update</dt>
+                        <dd class="mono"><%= runtime.last_event_at || "n/a" %></dd>
+                      </div>
+                      <div>
+                        <dt>Retry Due</dt>
+                        <dd class="mono"><%= runtime.retry_due_at || "n/a" %></dd>
+                      </div>
+                    </dl>
+
+                    <div :if={runtime.last_message} class="tracker-runtime-note">
+                      <p class="metric-label">Latest Agent Note</p>
+                      <pre><%= runtime.last_message %></pre>
+                    </div>
+
+                    <div :if={runtime.retry_error} class="tracker-runtime-note tracker-runtime-note-error">
+                      <p class="metric-label">Last Error</p>
+                      <pre><%= runtime.retry_error %></pre>
+                    </div>
+                  </div>
+
+                  <div :if={issue.description} class="code-panel">
+                    <pre><%= issue.description %></pre>
+                  </div>
+                <% else %>
+                  <p class="empty-state">Select an issue to inspect its local tracker details.</p>
+                <% end %>
+              </article>
+
+              <form id="local-issue-create-form" class="tracker-create-form" phx-submit="create_local_issue">
                 <div class="field-stack">
-                  <label for="local-issue-state">State</label>
-                  <select id="local-issue-state" name="issue[state]">
-                    <option :for={state <- @local_issue_states} value={state}>
-                      <%= state %>
-                    </option>
-                  </select>
+                  <label for="local-issue-title">Title</label>
+                  <input id="local-issue-title" type="text" name="issue[title]" required />
+                </div>
+
+                <div class="field-row">
+                  <div class="field-stack">
+                    <label for="local-issue-state">State</label>
+                    <select id="local-issue-state" name="issue[state]">
+                      <option :for={state <- @local_issue_states} value={state}>
+                        <%= state %>
+                      </option>
+                    </select>
+                  </div>
+
+                  <div class="field-stack">
+                    <label for="local-issue-priority">Priority</label>
+                    <input
+                      id="local-issue-priority"
+                      type="number"
+                      min="0"
+                      step="1"
+                      name="issue[priority]"
+                      placeholder="1"
+                    />
+                  </div>
                 </div>
 
                 <div class="field-stack">
-                  <label for="local-issue-priority">Priority</label>
+                  <label for="local-issue-labels">Labels</label>
                   <input
-                    id="local-issue-priority"
-                    type="number"
-                    min="0"
-                    step="1"
-                    name="issue[priority]"
-                    placeholder="1"
+                    id="local-issue-labels"
+                    type="text"
+                    name="issue[labels]"
+                    placeholder="go, migration, local"
                   />
                 </div>
-              </div>
 
-              <div class="field-stack">
-                <label for="local-issue-labels">Labels</label>
-                <input
-                  id="local-issue-labels"
-                  type="text"
-                  name="issue[labels]"
-                  placeholder="go, migration, local"
-                />
-              </div>
+                <div class="field-stack">
+                  <label for="local-issue-description">Description</label>
+                  <textarea
+                    id="local-issue-description"
+                    name="issue[description]"
+                    rows="5"
+                    placeholder="Describe the scope, acceptance checks, and any blockers."
+                  ></textarea>
+                </div>
 
-              <div class="field-stack">
-                <label for="local-issue-description">Description</label>
-                <textarea
-                  id="local-issue-description"
-                  name="issue[description]"
-                  rows="5"
-                  placeholder="Describe the scope, acceptance checks, and any blockers."
-                ></textarea>
-              </div>
-
-              <button type="submit">Create issue</button>
-            </form>
+                <button type="submit">Create issue</button>
+              </form>
+            </div>
           </div>
         </section>
       <% end %>
@@ -471,7 +647,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
       end)
   end
 
-  defp format_runtime_and_turns(started_at, turn_count, now) when is_integer(turn_count) and turn_count > 0 do
+  defp format_runtime_and_turns(started_at, turn_count, now)
+       when is_integer(turn_count) and turn_count > 0 do
     "#{format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))} / #{turn_count}"
   end
 
@@ -489,7 +666,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
     DateTime.diff(now, started_at, :second)
   end
 
-  defp runtime_seconds_from_started_at(started_at, %DateTime{} = now) when is_binary(started_at) do
+  defp runtime_seconds_from_started_at(started_at, %DateTime{} = now)
+       when is_binary(started_at) do
     case DateTime.from_iso8601(started_at) do
       {:ok, parsed, _offset} -> runtime_seconds_from_started_at(parsed, now)
       _ -> 0
@@ -513,15 +691,36 @@ defmodule SymphonyElixirWeb.DashboardLive do
     normalized = state |> to_string() |> String.downcase()
 
     cond do
-      String.contains?(normalized, ["progress", "running", "active"]) -> "#{base} state-badge-active"
-      String.contains?(normalized, ["blocked", "error", "failed"]) -> "#{base} state-badge-danger"
-      String.contains?(normalized, ["todo", "queued", "pending", "retry"]) -> "#{base} state-badge-warning"
-      true -> base
+      String.contains?(normalized, ["progress", "running", "active"]) ->
+        "#{base} state-badge-active"
+
+      String.contains?(normalized, ["blocked", "error", "failed"]) ->
+        "#{base} state-badge-danger"
+
+      String.contains?(normalized, ["todo", "queued", "pending", "retry"]) ->
+        "#{base} state-badge-warning"
+
+      true ->
+        base
     end
   end
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
+  end
+
+  defp refresh_local_tracker(socket, selected_ref \\ nil) do
+    tracker = load_local_tracker()
+
+    selected_ref =
+      resolve_selected_local_issue_ref(
+        tracker,
+        selected_ref || socket.assigns[:selected_local_issue_ref]
+      )
+
+    socket
+    |> assign(:local_tracker, tracker)
+    |> assign(:selected_local_issue_ref, selected_ref)
   end
 
   defp load_local_tracker do
@@ -532,7 +731,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             %{
               enabled?: true,
               path: Config.local_tracker_path(),
-              issues: Enum.map(issues, &local_issue_payload/1),
+              issues: issues |> Enum.map(&local_issue_payload/1) |> sort_local_issues(),
               error: nil
             }
 
@@ -559,7 +758,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
       state: issue.state || "Unknown",
       priority: issue.priority,
       labels: issue.labels || [],
-      updated_at: local_issue_timestamp(issue.updated_at)
+      created_at: local_issue_timestamp(issue.created_at),
+      updated_at: local_issue_timestamp(issue.updated_at),
+      branch_name: issue.branch_name,
+      blocked_by: issue.blocked_by || [],
+      url: issue.url,
+      assigned_to_worker: Map.get(issue, :assigned_to_worker, true)
     }
   end
 
@@ -586,7 +790,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp parse_optional_integer(_value), do: nil
 
   defp local_issue_states do
-    (Config.linear_active_states() ++ Config.linear_terminal_states())
+    (["Backlog"] ++ Config.linear_active_states() ++ Config.linear_terminal_states())
     |> Enum.map(&to_string/1)
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()
@@ -612,11 +816,200 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp local_issue_labels([]), do: "n/a"
   defp local_issue_labels(labels), do: Enum.join(labels, ", ")
 
+  defp local_issue_worker_label(false), do: "manual only"
+  defp local_issue_worker_label(_value), do: "worker enabled"
+
+  defp local_issue_blocked_by([]), do: "none"
+  defp local_issue_blocked_by(values), do: Enum.join(values, ", ")
+
+  defp local_issue_count(tracker, states) when is_list(states) do
+    wanted =
+      states
+      |> Enum.map(&normalize_issue_state/1)
+      |> MapSet.new()
+
+    Enum.count(tracker.issues, fn issue ->
+      MapSet.member?(wanted, normalize_issue_state(issue.state))
+    end)
+  end
+
+  defp local_tracker_runtime_count(tracker, payload, :running) do
+    issue_refs = tracker_issue_identifiers(tracker)
+
+    Enum.count(payload.running, fn entry ->
+      MapSet.member?(issue_refs, Map.get(entry, :issue_identifier))
+    end)
+  end
+
+  defp local_tracker_runtime_count(tracker, payload, :retrying) do
+    issue_refs = tracker_issue_identifiers(tracker)
+
+    Enum.count(payload.retrying, fn entry ->
+      MapSet.member?(issue_refs, Map.get(entry, :issue_identifier))
+    end)
+  end
+
+  defp tracker_issue_identifiers(tracker) do
+    tracker.issues
+    |> Enum.map(& &1.identifier)
+    |> MapSet.new()
+  end
+
+  defp selected_local_issue(tracker, ref) do
+    Enum.find(tracker.issues, &(&1.id == ref))
+  end
+
+  defp local_tracker_capacity_value(payload) do
+    capacity = Map.get(payload, :capacity, %{})
+    "#{Map.get(capacity, :running, 0)} / #{Map.get(capacity, :limit, 0)}"
+  end
+
+  defp local_tracker_capacity_detail(payload) do
+    capacity = Map.get(payload, :capacity, %{})
+    polling = Map.get(payload, :polling, %{})
+    available = Map.get(capacity, :available, 0)
+
+    poll_copy =
+      cond do
+        Map.get(polling, :checking?) ->
+          "polling now"
+
+        is_integer(Map.get(polling, :next_poll_in_ms)) ->
+          "next poll #{format_runtime_seconds(ceil_seconds(Map.get(polling, :next_poll_in_ms)))}"
+
+        true ->
+          "poll schedule unavailable"
+      end
+
+    "#{available} open slots · #{poll_copy}"
+  end
+
+  defp ceil_seconds(milliseconds) when is_integer(milliseconds) and milliseconds > 0 do
+    div(milliseconds + 999, 1_000)
+  end
+
+  defp ceil_seconds(_milliseconds), do: 0
+
+  defp resolve_selected_local_issue_ref(%{issues: issues}, current_ref) do
+    cond do
+      Enum.any?(issues, &(&1.id == current_ref)) ->
+        current_ref
+
+      issue =
+          Enum.find(
+            issues,
+            &(normalize_issue_state(&1.state) == normalize_issue_state("In Progress"))
+          ) ->
+        issue.id
+
+      issue = List.first(issues) ->
+        issue.id
+
+      true ->
+        nil
+    end
+  end
+
+  defp local_issue_runtime_badge(issue, payload) do
+    cond do
+      local_issue_retrying?(issue, payload) -> "Retrying"
+      local_issue_running?(issue, payload) -> "Running"
+      true -> "Idle"
+    end
+  end
+
+  defp local_issue_runtime_badge_class(issue, payload) do
+    base = "state-badge"
+
+    cond do
+      local_issue_retrying?(issue, payload) -> "#{base} state-badge-danger"
+      local_issue_running?(issue, payload) -> "#{base} state-badge-active"
+      true -> "#{base} state-badge-warning"
+    end
+  end
+
+  defp local_issue_running?(issue, payload) do
+    Enum.any?(payload.running, fn entry ->
+      Map.get(entry, :issue_identifier) == issue.identifier
+    end)
+  end
+
+  defp local_issue_retrying?(issue, payload) do
+    Enum.any?(payload.retrying, fn entry ->
+      Map.get(entry, :issue_identifier) == issue.identifier
+    end)
+  end
+
+  defp local_issue_runtime_details(issue, payload) do
+    running = local_issue_running_entry(issue, payload)
+    retry = local_issue_retry_entry(issue, payload)
+
+    %{
+      workspace_path: Path.join(Config.workspace_root(), issue.identifier),
+      session_id: running && Map.get(running, :session_id),
+      turn_count: running && Map.get(running, :turn_count),
+      last_event: running && Map.get(running, :last_event),
+      last_message: running && Map.get(running, :last_message),
+      last_event_at: running && Map.get(running, :last_event_at),
+      retry_due_at: retry && Map.get(retry, :due_at),
+      retry_error: retry && Map.get(retry, :error)
+    }
+  end
+
+  defp local_issue_running_entry(issue, payload) do
+    Enum.find(payload.running, fn entry ->
+      Map.get(entry, :issue_identifier) == issue.identifier
+    end)
+  end
+
+  defp local_issue_retry_entry(issue, payload) do
+    Enum.find(payload.retrying, fn entry ->
+      Map.get(entry, :issue_identifier) == issue.identifier
+    end)
+  end
+
+  defp local_issue_detail_href(issue), do: "/api/v1/#{issue.identifier}"
+
+  defp local_issue_row_class(issue, selected_ref) when issue.id == selected_ref,
+    do: "issue-row-selected"
+
+  defp local_issue_row_class(_issue, _selected_ref), do: nil
+
+  defp sort_local_issues(issues) do
+    Enum.sort_by(issues, fn issue ->
+      {
+        local_issue_state_rank(issue.state),
+        issue.priority || 9_999,
+        issue.identifier
+      }
+    end)
+  end
+
+  defp local_issue_state_rank(state) do
+    case normalize_issue_state(state) do
+      "in progress" -> 0
+      "rework" -> 1
+      "todo" -> 2
+      "in review" -> 3
+      "merging" -> 4
+      "backlog" -> 5
+      _ -> 6
+    end
+  end
+
   defp tracker_feedback_class(:error), do: "tracker-feedback tracker-feedback-error"
   defp tracker_feedback_class(_kind), do: "tracker-feedback tracker-feedback-info"
 
   defp local_tracker_error_message(prefix, :issue_not_found), do: "#{prefix}: issue not found"
   defp local_tracker_error_message(prefix, reason), do: "#{prefix}: #{inspect(reason)}"
+
+  defp normalize_issue_state(state) when is_binary(state) do
+    state
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp normalize_issue_state(state), do: state |> to_string() |> normalize_issue_state()
 
   defp pretty_value(nil), do: "n/a"
   defp pretty_value(value), do: inspect(value, pretty: true, limit: :infinity)

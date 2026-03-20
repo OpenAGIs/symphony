@@ -82,7 +82,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert File.read!(Path.join(second_workspace, "README.md")) == "changed\n"
       assert File.read!(Path.join(second_workspace, "local-progress.txt")) == "in progress\n"
       assert File.read!(Path.join([second_workspace, "deps", "cache.txt"])) == "cached deps\n"
-      assert File.read!(Path.join([second_workspace, "_build", "artifact.txt"])) == "compiled artifact\n"
+
+      assert File.read!(Path.join([second_workspace, "_build", "artifact.txt"])) ==
+               "compiled artifact\n"
+
       refute File.exists?(Path.join([second_workspace, "tmp", "scratch.txt"]))
     after
       File.rm_rf(workspace_root)
@@ -224,7 +227,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     try do
       target_workspace = Path.join(workspace_root, "S_1")
-      untouched_workspace = Path.join(workspace_root, "OTHER-#{System.unique_integer([:positive])}")
+
+      untouched_workspace =
+        Path.join(workspace_root, "OTHER-#{System.unique_integer([:positive])}")
 
       File.mkdir_p!(target_workspace)
       File.mkdir_p!(untouched_workspace)
@@ -500,7 +505,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              Orchestrator.revalidate_issue_for_dispatch_for_test(stale_issue, fetcher)
 
     assert skipped_issue.identifier == "MT-1005"
-    assert skipped_issue.blocked_by == [%{id: "blocker-3", identifier: "MT-1006", state: "In Progress"}]
+
+    assert skipped_issue.blocked_by == [
+             %{id: "blocker-3", identifier: "MT-1006", state: "In Progress"}
+           ]
   end
 
   test "workspace remove returns error information for missing directory" do
@@ -570,7 +578,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         hook_before_remove: "printf '%s\\n%s\\n%s\\n%s\\n' \"$SYMPHONY_ISSUE_IDENTIFIER\" \"$SYMPHONY_WORKFLOW_FILE\" \"$SYMPHONY_WORKFLOW_DIR\" \"$SYMPHONY_WORKSPACE\" > \"#{before_remove_marker}\""
       )
 
-      assert {:ok, workspace} = Workspace.create_for_issue(%{id: "issue-123", identifier: "MT-ENV"})
+      assert {:ok, workspace} =
+               Workspace.create_for_issue(%{id: "issue-123", identifier: "MT-ENV"})
 
       assert File.read!(Path.join(workspace, "hook-env.txt"))
              |> String.split("\n", trim: true) == [
@@ -730,13 +739,19 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.codex_read_timeout_ms() == 5_000
     assert Config.codex_stall_timeout_ms() == 300_000
 
-    write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server --model gpt-5.3-codex")
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command: "codex app-server --model gpt-5.3-codex"
+    )
+
     assert Config.codex_command() == "codex app-server --model gpt-5.3-codex"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_approval_policy: "on-request",
       codex_thread_sandbox: "workspace-write",
-      codex_turn_sandbox_policy: %{type: "workspaceWrite", writableRoots: ["/tmp/workspace", "/tmp/cache"]}
+      codex_turn_sandbox_policy: %{
+        type: "workspaceWrite",
+        writableRoots: ["/tmp/workspace", "/tmp/cache"]
+      }
     )
 
     assert Config.codex_approval_policy() == "on-request"
@@ -778,7 +793,15 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     )
 
     assert Config.linear_active_states() == ["Todo", "In Progress"]
-    assert Config.linear_terminal_states() == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+
+    assert Config.linear_terminal_states() == [
+             "Closed",
+             "Cancelled",
+             "Canceled",
+             "Duplicate",
+             "Done"
+           ]
+
     assert Config.poll_interval_ms() == 30_000
     assert Config.workspace_root() == Path.join(System.tmp_dir!(), "symphony_workspaces")
     assert Config.max_retry_backoff_ms() == 300_000
@@ -897,6 +920,19 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert Config.linear_api_token() == "env:#{api_key_env_var}"
     assert Config.workspace_root() == "env:#{workspace_env_var}"
+  end
+
+  test "config resolves relative path values from the workflow directory" do
+    workflow_dir = Path.dirname(Workflow.workflow_file_path())
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: "./issues.json",
+      workspace_root: "./workspaces"
+    )
+
+    assert Config.local_tracker_path() == Path.expand("./issues.json", workflow_dir)
+    assert Config.workspace_root() == Path.expand("./workspaces", workflow_dir)
   end
 
   test "config supports per-state max concurrent agent overrides" do

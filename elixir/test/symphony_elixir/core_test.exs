@@ -89,7 +89,9 @@ defmodule SymphonyElixir.CoreTest do
       tracker_path: "./issues.json"
     )
 
-    assert Config.local_tracker_path() == Path.expand("./issues.json")
+    assert Config.local_tracker_path() ==
+             Path.expand("./issues.json", Path.dirname(Workflow.workflow_file_path()))
+
     assert :ok = Config.validate!()
   end
 

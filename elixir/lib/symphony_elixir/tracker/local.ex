@@ -387,7 +387,7 @@ defmodule SymphonyElixir.Tracker.Local do
           []
 
         value ->
-          [value]
+          [to_string(value)]
       end
       |> normalize_string_list()
 
