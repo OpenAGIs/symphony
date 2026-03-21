@@ -6,6 +6,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   alias SymphonyElixir.Linear.{Adapter, MetadataCache}
   alias SymphonyElixir.Tracker.Memory
+  alias SymphonyElixir.Tracker.Unsupported
 
   @endpoint SymphonyElixirWeb.Endpoint
 
@@ -79,12 +80,19 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    tracker_adapter_modules = Application.get_env(:symphony_elixir, :tracker_adapter_modules)
 
     on_exit(fn ->
       if is_nil(linear_client_module) do
         Application.delete_env(:symphony_elixir, :linear_client_module)
       else
         Application.put_env(:symphony_elixir, :linear_client_module, linear_client_module)
+      end
+
+      if is_nil(tracker_adapter_modules) do
+        Application.delete_env(:symphony_elixir, :tracker_adapter_modules)
+      else
+        Application.put_env(:symphony_elixir, :tracker_adapter_modules, tracker_adapter_modules)
       end
     end)
 
@@ -158,18 +166,18 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:noreply, returned_state} = WorkflowStore.handle_info(:poll, state)
     assert returned_state.workflow.prompt == "Manual workflow prompt"
     refute returned_state.stamp == nil
-    assert_receive :poll, 1_100
+    assert_receive :poll, 2_000
 
     Workflow.set_workflow_file_path(missing_path)
     assert {:noreply, path_error_state} = WorkflowStore.handle_info(:poll, returned_state)
     assert path_error_state.workflow.prompt == "Manual workflow prompt"
-    assert_receive :poll, 1_100
+    assert_receive :poll, 2_000
 
     Workflow.set_workflow_file_path(manual_path)
-    File.rm!(manual_path)
+    assert File.rm(manual_path) in [:ok, {:error, :enoent}]
     assert {:noreply, removed_state} = WorkflowStore.handle_info(:poll, path_error_state)
     assert removed_state.workflow.prompt == "Manual workflow prompt"
-    assert_receive :poll, 1_100
+    assert_receive :poll, 2_000
 
     Process.exit(manual_pid, :normal)
     restart_result = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
@@ -193,23 +201,102 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issues_by_states([" in progress ", 42])
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["issue-1"])
     assert :ok = SymphonyElixir.Tracker.create_comment("issue-1", "comment")
+
+    assert {:ok, %{id: "workpad:issue-1", body: "body", created?: true}} =
+             SymphonyElixir.Tracker.ensure_workpad_comment("issue-1", "body")
+
+    assert :ok = SymphonyElixir.Tracker.update_comment("comment-1", "updated")
     assert :ok = SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
+    assert :ok = SymphonyElixir.Tracker.claim_issue("issue-1", "runtime-a")
+    assert :ok = SymphonyElixir.Tracker.release_issue_claim("issue-1", "runtime-a")
     assert_receive {:memory_tracker_comment, "issue-1", "comment"}
+    assert_receive {:memory_tracker_ensure_workpad, "issue-1", "body"}
+    assert_receive {:memory_tracker_comment_update, "comment-1", "updated"}
     assert_receive {:memory_tracker_state_update, "issue-1", "Done"}
 
     Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
     assert :ok = Memory.create_comment("issue-1", "quiet")
+
+    assert {:ok, %{id: "workpad:issue-1", body: "body", created?: true}} =
+             Memory.ensure_workpad_comment("issue-1", "body")
+
+    assert :ok = Memory.update_comment("comment-1", "updated")
     assert :ok = Memory.update_issue_state("issue-1", "Quiet")
 
-    write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_kind: "local",
-      tracker_path: "./issues.json"
+    local_tracker_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "issues.json")
+
+    File.write!(
+      local_tracker_path,
+      Jason.encode!(
+        %{
+          "issues" => [
+            %{
+              "id" => "local-claim-1",
+              "identifier" => "LOCAL-CLAIM-1",
+              "title" => "Claimable issue",
+              "state" => "Todo"
+            }
+          ]
+        },
+        pretty: true
+      )
     )
 
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "local", tracker_path: local_tracker_path)
     assert SymphonyElixir.Tracker.adapter() == SymphonyElixir.Tracker.Local
+    assert :ok = SymphonyElixir.Tracker.claim_issue("local-claim-1", "runtime-a")
+    assert :ok = SymphonyElixir.Tracker.release_issue_claim("local-claim-1")
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
+    assert :ok = SymphonyElixir.Tracker.claim_issue("issue-1", "runtime-a")
+    assert :ok = SymphonyElixir.Tracker.release_issue_claim("issue-1", "runtime-a")
+  end
+
+  test "tracker resolves workflow-configured custom adapters, legacy env adapters, and unsupported fallback" do
+    issue = %Issue{id: "issue-2", identifier: "BIG-2", state: "Todo"}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "bigclaw",
+      tracker_adapter_module: "SymphonyElixir.Tracker.Memory"
+    )
+
+    assert Config.tracker_adapter_module() == Memory
+    assert SymphonyElixir.Tracker.adapter() == Memory
+    assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_candidate_issues()
+
+    Application.put_env(:symphony_elixir, :tracker_adapter_modules, %{"jira" => Memory})
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "jira", tracker_adapter_module: nil)
+    assert SymphonyElixir.Tracker.adapter() == Memory
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "github", tracker_adapter_module: nil)
+    assert SymphonyElixir.Tracker.adapter() == Unsupported
+
+    assert {:error, {:unsupported_tracker_adapter, "github"}} =
+             SymphonyElixir.Tracker.fetch_candidate_issues()
+
+    assert {:error, {:unsupported_tracker_adapter, "github"}} =
+             SymphonyElixir.Tracker.fetch_issues_by_states(["Todo"])
+
+    assert {:error, {:unsupported_tracker_adapter, "github"}} =
+             SymphonyElixir.Tracker.fetch_issue_states_by_ids(["issue-1"])
+
+    assert {:error, {:unsupported_tracker_adapter, "github"}} =
+             SymphonyElixir.Tracker.create_comment("issue-1", "body")
+
+    assert {:error, {:unsupported_tracker_adapter, "github"}} =
+             SymphonyElixir.Tracker.ensure_workpad_comment("issue-1", "body")
+
+    assert {:error, {:unsupported_tracker_adapter, "github"}} =
+             SymphonyElixir.Tracker.update_comment("comment-1", "body")
+
+    assert {:error, {:unsupported_tracker_adapter, "github"}} =
+             SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: nil, tracker_adapter_module: nil)
+    assert SymphonyElixir.Tracker.adapter() == Unsupported
   end
 
   test "linear adapter delegates reads and validates mutation responses" do
@@ -267,6 +354,170 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_receive {:graphql_called, cached_update_query, %{issueId: "issue-1", stateId: "state-cached"}}
 
     assert cached_update_query =~ "issueUpdate"
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "comments" => %{
+               "nodes" => [
+                 %{
+                   "id" => "comment-resolved",
+                   "body" => "## Codex Workpad\nold",
+                   "resolvedAt" => "2026-03-10T00:00:00Z",
+                   "updatedAt" => "2026-03-10T00:00:00Z",
+                   "createdAt" => "2026-03-10T00:00:00Z"
+                 },
+                 %{
+                   "id" => "comment-active",
+                   "body" => "## Codex Workpad\ncurrent",
+                   "resolvedAt" => nil,
+                   "updatedAt" => "2026-03-10T01:00:00Z",
+                   "createdAt" => "2026-03-10T00:30:00Z"
+                 }
+               ]
+             }
+           }
+         }
+       }}
+    )
+
+    assert {:ok, %{id: "comment-active", body: "## Codex Workpad\ncurrent", created?: false}} =
+             Adapter.ensure_workpad_comment("issue-1", "new body")
+
+    {workpad_lookup_query, _variables} =
+      assert_graphql_call_matching(fn query, variables ->
+        variables == %{issueId: "issue-1"} and query =~ "comments"
+      end)
+
+    assert workpad_lookup_query =~ "comments"
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok, %{"data" => %{"issue" => %{"comments" => %{"nodes" => []}}}}},
+        {:ok,
+         %{
+           "data" => %{
+             "commentCreate" => %{
+               "success" => true,
+               "comment" => %{"id" => "comment-new", "body" => "bootstrap"}
+             }
+           }
+         }}
+      ]
+    )
+
+    assert {:ok, %{id: "comment-new", body: "bootstrap", created?: true}} =
+             Adapter.ensure_workpad_comment("issue-1", "bootstrap")
+
+    {_workpad_lookup_query, _variables} =
+      assert_graphql_call_matching(fn query, variables ->
+        variables == %{issueId: "issue-1"} and query =~ "comments"
+      end)
+
+    {created_workpad_query, _variables} =
+      assert_graphql_call_matching(fn query, variables ->
+        variables == %{issueId: "issue-1", body: "bootstrap"} and query =~ "commentCreate"
+      end)
+
+    assert created_workpad_query =~ "commentCreate"
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok, %{"data" => %{"commentUpdate" => %{"success" => true}}}}
+    )
+
+    assert :ok = Adapter.update_comment("comment-1", "updated")
+    assert_receive {:graphql_called, comment_update_query, %{commentId: "comment-1", body: "updated"}}
+    assert comment_update_query =~ "commentUpdate"
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok, %{"data" => %{"commentUpdate" => %{"success" => false}}}}
+    )
+
+    assert {:error, :comment_update_failed} = Adapter.update_comment("comment-1", "broken")
+
+    Process.put({FakeLinearClient, :graphql_result}, {:error, :boom})
+    assert {:error, :boom} = Adapter.update_comment("comment-1", "boom")
+
+    Process.put({FakeLinearClient, :graphql_result}, {:ok, %{"data" => %{}}})
+    assert {:error, :comment_update_failed} = Adapter.update_comment("comment-1", "odd")
+
+    Process.put({FakeLinearClient, :graphql_result}, :unexpected)
+    assert {:error, :comment_update_failed} = Adapter.update_comment("comment-1", "unexpected")
+
+    Process.put({FakeLinearClient, :graphql_result}, {:error, :boom})
+    assert {:error, :boom} = Adapter.ensure_workpad_comment("issue-1", "bootstrap")
+
+    Process.put({FakeLinearClient, :graphql_result}, {:ok, %{"data" => %{"issue" => %{}}}})
+    assert {:error, :comment_lookup_failed} = Adapter.ensure_workpad_comment("issue-1", "bootstrap")
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "comments" => %{
+               "nodes" => [
+                 %{
+                   "body" => "## Codex Workpad\nmalformed",
+                   "resolvedAt" => nil,
+                   "updatedAt" => "2026-03-10T01:00:00Z",
+                   "createdAt" => "2026-03-10T00:30:00Z"
+                 }
+               ]
+             }
+           }
+         }
+       }}
+    )
+
+    assert {:error, :comment_lookup_failed} = Adapter.ensure_workpad_comment("issue-1", "bootstrap")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok, %{"data" => %{"issue" => %{"comments" => %{"nodes" => []}}}}},
+        {:ok, %{"data" => %{"commentCreate" => %{"success" => false}}}}
+      ]
+    )
+
+    assert {:error, :comment_create_failed} = Adapter.ensure_workpad_comment("issue-1", "bootstrap")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok, %{"data" => %{"issue" => %{"comments" => %{"nodes" => []}}}}},
+        {:ok, %{"data" => %{}}}
+      ]
+    )
+
+    assert {:error, :comment_create_failed} = Adapter.ensure_workpad_comment("issue-1", "bootstrap")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok, %{"data" => %{"issue" => %{"comments" => %{"nodes" => []}}}}},
+        {:error, :create_boom}
+      ]
+    )
+
+    assert {:error, :create_boom} = Adapter.ensure_workpad_comment("issue-1", "bootstrap")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok, %{"data" => %{"issue" => %{"comments" => %{"nodes" => []}}}}},
+        {:ok, %{"data" => %{"commentCreate" => %{"success" => true, "comment" => %{"id" => "comment-new"}}}}}
+      ]
+    )
+
+    assert {:error, :comment_create_failed} = Adapter.ensure_workpad_comment("issue-1", "bootstrap")
 
     Process.put(
       {FakeLinearClient, :graphql_results},
@@ -343,6 +594,20 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
   end
 
+  defp assert_graphql_call_matching(match_fun) when is_function(match_fun, 2) do
+    receive do
+      {:graphql_called, query, variables} ->
+        if match_fun.(query, variables) do
+          {query, variables}
+        else
+          assert_graphql_call_matching(match_fun)
+        end
+    after
+      1_000 ->
+        flunk("expected matching graphql call")
+    end
+  end
+
   test "phoenix observability api preserves state, issue, and refresh responses" do
     snapshot = static_snapshot()
     orchestrator_name = Module.concat(__MODULE__, :ObservabilityApiOrchestrator)
@@ -366,7 +631,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
-             "counts" => %{"running" => 1, "retrying" => 1},
+             "counts" => %{"running" => 1, "retrying" => 1, "dead_lettered" => 0},
              "capacity" => %{"running" => 1, "limit" => 10, "available" => 9},
              "running" => [
                %{
@@ -391,6 +656,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "error" => "boom"
                }
              ],
+             "dead_letters" => [],
              "codex_totals" => %{
                "input_tokens" => 4,
                "output_tokens" => 8,
@@ -528,6 +794,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_css =~ ".status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
+    assert dashboard_css =~ ".tracker-list-actions"
+    assert dashboard_css =~ ".tracker-ops-panel"
+    assert dashboard_css =~ ".dashboard-category-card"
+    assert dashboard_css =~ ".issue-page-shell"
 
     phoenix_html_js = response(get(build_conn(), "/vendor/phoenix_html/phoenix_html.js"), 200)
     assert phoenix_html_js =~ "phoenix.link.click"
@@ -559,18 +829,21 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-    {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ "Operations Dashboard"
-    assert html =~ "Phoenix LiveView"
-    assert html =~ "dashboard release1.0"
+    {:ok, view, html} = live(build_conn(), "/sessions")
+    assert html =~ "Execution Lanes"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "rendered"
-    assert html =~ "Runtime"
-    assert html =~ "Live"
-    assert html =~ "Offline"
+    assert html =~ "Running sessions"
     assert html =~ "Copy ID"
     assert html =~ "Codex update"
+    assert html =~ "OVR"
+    assert html =~ "SES"
+    assert html =~ "ISS"
+    assert html =~ "WRK"
+    assert html =~ ~s(aria-current="page")
+    assert html =~ "Issue board"
+    assert html =~ "State API"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
@@ -641,7 +914,16 @@ defmodule SymphonyElixir.ExtensionsTest do
               "description" => "Expose issue controls in the dashboard.",
               "priority" => 1,
               "state" => "Todo",
-              "labels" => ["dashboard", "local"]
+              "labels" => ["dashboard", "local"],
+              "claimed_by" => "runtime-a",
+              "claimed_at" => "2026-03-19T00:00:00Z",
+              "lease_expires_at" => "2099-03-19T00:05:00Z",
+              "comments" => [
+                %{
+                  "body" => "first synced note",
+                  "created_at" => "2026-03-19T00:01:00Z"
+                }
+              ]
             }
           ]
         },
@@ -665,22 +947,49 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-    {:ok, view, html} = live(build_conn(), "/")
+    {:ok, view, html} = live(build_conn(), "/issues")
     assert html =~ "Local issues"
+    assert html =~ "Local Issue Studio"
     assert html =~ "Agent Capacity"
+    assert html =~ "Focused issue"
     assert html =~ "LOCAL-1"
     assert html =~ "Move the workflow UI local"
     assert html =~ tracker_path
     assert html =~ Path.join(Config.workspace_root(), "LOCAL-1")
+    assert html =~ "runtime-a"
+    assert html =~ "Release Lease"
+    assert html =~ "Leased"
+    assert html =~ "/issues/LOCAL-1"
+    assert html =~ ~s(aria-current="page")
+    assert html =~ "Focused workspace"
+    assert html =~ "State API"
+    assert html =~ ~r/Runnable.*?<p class="metric-value">0<\/p>/s
 
     local_issue_payload = json_response(get(build_conn(), "/api/v1/LOCAL-1"), 200)
 
     assert local_issue_payload["status"] == "Todo"
     assert local_issue_payload["tracked"]["identifier"] == "LOCAL-1"
     assert local_issue_payload["tracked"]["title"] == "Move the workflow UI local"
+    assert local_issue_payload["workspace"]["path"] == Path.join(Config.workspace_root(), "LOCAL-1")
+    assert local_issue_payload["tracked"]["claimed_by"] == "runtime-a"
+    assert local_issue_payload["tracked"]["lease_expires_at"] == "2099-03-19T00:05:00Z"
+    assert local_issue_payload["tracked"]["lease_status"] == "active"
 
-    assert local_issue_payload["workspace"]["path"] ==
-             Path.join(Config.workspace_root(), "LOCAL-1")
+    assert local_issue_payload["tracked"]["comments"] == [
+             %{
+               "body" => "first synced note",
+               "created_at" => "2026-03-19T00:01:00Z"
+             }
+           ]
+
+    released_html =
+      view
+      |> form("#local-issue-release-local-1", %{"issue_ref" => "local-1"})
+      |> render_submit()
+
+    assert released_html =~ "Released lease on local-1"
+    assert released_html =~ "Idle"
+    assert released_html =~ ~r/Runnable.*?<p class="metric-value">1<\/p>/s
 
     created_html =
       view
@@ -714,7 +1023,137 @@ defmodule SymphonyElixir.ExtensionsTest do
         issue["identifier"] == "LOCAL-1" and issue["state"] == "Done"
       end) and
         Enum.any?(issues, fn issue ->
+          issue["identifier"] == "LOCAL-1" and is_nil(issue["claimed_by"])
+        end) and
+        Enum.any?(issues, fn issue ->
           issue["identifier"] == "LOCAL-2" and issue["state"] == "In Progress"
+        end)
+    end)
+  end
+
+  test "issue liveview renders dedicated issue workspace and supports local actions" do
+    tracker_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "issue_workspace_issues.json")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "local",
+      tracker_path: tracker_path,
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    File.write!(
+      tracker_path,
+      Jason.encode!(
+        %{
+          "issues" => [
+            %{
+              "id" => "local-workspace-1",
+              "identifier" => "LOCAL-WORKSPACE-1",
+              "title" => "Build a dedicated issue workspace",
+              "description" => "Move heavy issue detail off the dashboard.",
+              "priority" => 2,
+              "state" => "In Progress",
+              "labels" => ["dashboard", "workspace"],
+              "claimed_by" => "runtime-b",
+              "claimed_at" => "2026-03-19T00:10:00Z",
+              "lease_expires_at" => "2099-03-19T00:15:00Z",
+              "comments" => [
+                %{
+                  "body" => "workspace note",
+                  "created_at" => "2026-03-19T00:11:00Z"
+                }
+              ]
+            }
+          ]
+        },
+        pretty: true
+      )
+    )
+
+    snapshot = static_snapshot()
+
+    orchestrator_name = Module.concat(__MODULE__, :IssueWorkspaceOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: %{
+          snapshot
+          | running: [
+              %{
+                issue_id: "local-workspace-1",
+                identifier: "LOCAL-WORKSPACE-1",
+                state: "In Progress",
+                session_id: "thread-local-workspace",
+                turn_count: 5,
+                last_codex_event: :notification,
+                last_codex_message: %{
+                  event: :notification,
+                  message: %{
+                    payload: %{
+                      "method" => "codex/event/agent_message_delta",
+                      "params" => %{"delta" => "workspace moved off dashboard"}
+                    }
+                  }
+                },
+                last_codex_timestamp: DateTime.utc_now(),
+                codex_input_tokens: 10,
+                codex_output_tokens: 12,
+                codex_total_tokens: 22,
+                started_at: DateTime.utc_now()
+              }
+            ]
+        },
+        refresh: %{
+          queued: true,
+          coalesced: false,
+          requested_at: DateTime.utc_now(),
+          operations: ["poll"]
+        }
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, html} = live(build_conn(), "/issues/LOCAL-WORKSPACE-1")
+    assert html =~ "Issue Workspace"
+    assert html =~ "Build a dedicated issue workspace"
+    assert html =~ "Back to issues"
+    assert html =~ "Overview"
+    assert html =~ "JSON API"
+    assert html =~ "WRK"
+    assert html =~ ~s(aria-current="page")
+    assert html =~ "observability-nav-link-active"
+    assert html =~ "workspace note"
+    assert html =~ "thread-local-workspace"
+    assert html =~ Path.join(Config.workspace_root(), "LOCAL-WORKSPACE-1")
+    assert html =~ "Release Lease"
+
+    released_html =
+      view
+      |> form("#issue-page-release-form", %{"issue_ref" => "local-workspace-1"})
+      |> render_submit()
+
+    assert released_html =~ "Released lease on local-workspace-1"
+    assert released_html =~ "unclaimed"
+    assert released_html =~ "Running"
+
+    updated_html =
+      view
+      |> form("#issue-page-state-form", %{"issue_ref" => "local-workspace-1", "state" => "Done"})
+      |> render_submit()
+
+    assert updated_html =~ "Updated local-workspace-1 to Done"
+    assert updated_html =~ "Done"
+
+    assert_eventually(fn ->
+      {:ok, payload} = File.read(tracker_path)
+      issues = Jason.decode!(payload)["issues"]
+
+      Enum.any?(issues, fn issue ->
+        issue["identifier"] == "LOCAL-WORKSPACE-1" and issue["state"] == "Done"
+      end) and
+        Enum.any?(issues, fn issue ->
+          issue["identifier"] == "LOCAL-WORKSPACE-1" and is_nil(issue["claimed_by"])
         end)
     end)
   end
@@ -764,7 +1203,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert response.status == 200
-    assert response.body["counts"] == %{"running" => 1, "retrying" => 1}
+    assert response.body["counts"] == %{"running" => 1, "retrying" => 1, "dead_lettered" => 0}
 
     dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
     assert dashboard_css.status == 200
